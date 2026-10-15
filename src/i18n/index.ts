@@ -10,7 +10,7 @@ import { pt } from "./pt.js";
 import { ru } from "./ru.js";
 import { tr } from "./tr.js";
 import { zh } from "./zh.js";
-import { zh_hk } from "./zh-hk.ts";
+import { zh_hk } from "./zh-hk.js";
 
 interface LocaleDefinition {
   code: string;

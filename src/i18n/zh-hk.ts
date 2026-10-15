@@ -1,6 +1,6 @@
 import type { I18nDictionary } from "./en.js";
 
-export const zh: I18nDictionary = {
+export const zh_hk: I18nDictionary = {
   "cmd.description.recent": "查看所有項目的最近會話",
   "recent.heading": "所有項目的最近會話（用 /recent 刷新）：",
   "recent.empty": "📭 所有項目中都沒有會話。",
