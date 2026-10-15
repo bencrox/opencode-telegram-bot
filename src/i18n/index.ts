@@ -10,6 +10,7 @@ import { pt } from "./pt.js";
 import { ru } from "./ru.js";
 import { tr } from "./tr.js";
 import { zh } from "./zh.js";
+import { zh_hk } from "./zh-hk.ts";
 
 interface LocaleDefinition {
   code: string;
@@ -90,6 +91,12 @@ const LOCALE_DEFINITIONS = [
     label: "简体中文",
     dateLocale: "zh-CN",
     dictionary: zh,
+  },
+  {
+    code: "zh-hk",
+    label: "繁體中文 (香港)",
+    dateLocale: "zh-hk",
+    dictionary: zh_hk,
   },
 ] as const satisfies readonly LocaleDefinition[];
 
