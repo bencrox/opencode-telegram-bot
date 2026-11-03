@@ -76,14 +76,17 @@ export const ar: I18nDictionary = {
   "bot.thinking": "💭 جارٍ التفكير...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ جارٍ العمل",
-  "progress.compact.finished_header": "✅ اكتمل العمل",
   "progress.compact.thinking": "💭 جارٍ التفكير...",
   "progress.compact.responding": "✍️ جارٍ كتابة الرد...",
   "progress.compact.waiting_question": "❓ في انتظار إجابتك...",
   "progress.compact.waiting_permission": "🔐 في انتظار الإذن...",
   "progress.compact.retrying": "🔁 جارٍ إعادة المحاولة...",
   "progress.compact.task": "🤖 المهمة قيد التشغيل",
-  "progress.compact.done": "{header}\nاستدعاءات الأدوات: {tools} · الملفات المعدلة: {files}",
+  "progress.compact.count.commands": "الأوامر: {count}",
+  "progress.compact.count.edits": "التعديلات: {count}",
+  "progress.compact.count.reads": "القراءات: {count}",
+  "progress.compact.count.tools": "الأدوات: {count}",
+  "progress.compact.count.changed_files": "الملفات المعدلة: {count}",
   "bot.project_not_selected": "🏗 لم تحدد مشروعًا بعد.\n\nاختر مشروعًا أولًا باستخدام /projects.",
   "bot.creating_session": "🔄 جارٍ بدء جلسة جديدة...",
   "bot.create_session_error":
@@ -256,7 +259,7 @@ export const ar: I18nDictionary = {
     "🏗 لم تحدد مشروعًا بعد.\n\nاختر مشروعًا أولًا باستخدام /projects.",
   "detach.no_active_session": "ℹ️ البوت غير متصل بأي جلسة بالفعل.",
   "detach.success":
-    "✅ تم قطع الاتصال بالجلسة: {title}\n\nلم يتم إيقاف جلسة OpenCode. إذا كانت لا تزال تعمل، فستستمر بشكل منفصل. للتحقق منها لاحقًا، اخترها مجددًا باستخدام /sessions.",
+    "✅ تم قطع الاتصال بالجلسة: {title}\n\nلم يتم إيقاف جلسة OpenCode. إذا كانت لا تزال تعمل، فستستمر بشكل منفصل. للتحقق منها لاحقًا، اخترها مجددًا باستخدام /recent.",
   "detach.error": "🔴 تعذر قطع الاتصال بالجلسة الحالية.",
 
   "new.project_not_selected": "🏗 لم تحدد مشروعًا بعد.\n\nاختر مشروعًا أولًا باستخدام /projects.",
@@ -271,6 +274,8 @@ export const ar: I18nDictionary = {
     "⚠️ تم إيقاف تدفق الأحداث، لكن الخادم لم يؤكد الإيقاف.\n\nتحقق من /status ثم أعد محاولة /abort بعد بضع ثوانٍ.",
   "stop.warn_maybe_finished": "⚠️ تم إيقاف تدفق الأحداث، لكن الوكيل ربما كان قد انتهى بالفعل.",
   "stop.success": "✅ تم إيقاف إجراء الوكيل. لن تُرسل أي رسائل أخرى من هذا التشغيل.",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy":
     "⚠️ تم إرسال الإشارة، لكن الوكيل لا يزال مشغولًا.\n\nتدفق الأحداث معطّل بالفعل، لذلك لن تُرسل رسائل وسيطة.",
   "stop.warn_timeout":
@@ -283,6 +288,7 @@ export const ar: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ خادم OpenCode يعمل بالفعل كعملية خارجية\n\nالإصدار: {version}\n\nلم يتم تشغيل هذا الخادم بواسطة البوت، لذلك لا يمكن إيقافه باستخدام /opencode-stop.",
   "opencode_start.already_running": "✅ خادم OpenCode يعمل بالفعل\n\nالإصدار: {version}",
+  "opencode_start.connected": "✅ تم الاتصال بخادم OpenCode قيد التشغيل\n{url} · v{version}",
   "opencode_start.remote_configured": "⚠️ يعمل /opencode_start فقط مع خادم OpenCode محلي.",
   "opencode_start.starting": "🔄 جارٍ تشغيل خادم OpenCode...",
   "opencode_start.start_error":

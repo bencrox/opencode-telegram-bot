@@ -73,14 +73,17 @@ export const tr: I18nDictionary = {
   "bot.thinking": "💭 Düşünüyor...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ Çalışıyor",
-  "progress.compact.finished_header": "✅ Çalışma tamamlandı",
   "progress.compact.thinking": "💭 Düşünüyor...",
   "progress.compact.responding": "✍️ Yanıt yazılıyor...",
   "progress.compact.waiting_question": "❓ Yanıtınız bekleniyor...",
   "progress.compact.waiting_permission": "🔐 İzin bekleniyor...",
   "progress.compact.retrying": "🔁 Yeniden deneniyor...",
   "progress.compact.task": "🤖 Görev çalışıyor",
-  "progress.compact.done": "{header}\naraç çağrıları: {tools} · değişen dosyalar: {files}",
+  "progress.compact.count.commands": "komutlar: {count}",
+  "progress.compact.count.edits": "düzenlemeler: {count}",
+  "progress.compact.count.reads": "okumalar: {count}",
+  "progress.compact.count.tools": "araçlar: {count}",
+  "progress.compact.count.changed_files": "değişen dosyalar: {count}",
   "bot.project_not_selected": "🏗 Proje seçilmedi.\n\nÖnce /projects ile bir proje seçin.",
   "bot.creating_session": "🔄 Yeni oturum oluşturuluyor...",
   "bot.create_session_error":
@@ -256,7 +259,7 @@ export const tr: I18nDictionary = {
   "detach.project_not_selected": "🏗 Proje seçilmedi.\n\nÖnce /projects ile bir proje seçin.",
   "detach.no_active_session": "ℹ️ Bot zaten hiçbir oturuma bağlı değil.",
   "detach.success":
-    "✅ Oturumdan ayrılındı: {title}\n\nOpenCode oturumu durdurulmadı. Hâlâ çalışıyorsa ayrı olarak devam edecek. Daha sonra kontrol etmek için /sessions ile yeniden seçin.",
+    "✅ Oturumdan ayrılındı: {title}\n\nOpenCode oturumu durdurulmadı. Hâlâ çalışıyorsa ayrı olarak devam edecek. Daha sonra kontrol etmek için /recent ile yeniden seçin.",
   "detach.error": "🔴 Geçerli oturumdan ayrılınamadı.",
 
   "new.project_not_selected": "🏗 Proje seçilmedi.\n\nÖnce /projects ile bir proje seçin.",
@@ -272,6 +275,8 @@ export const tr: I18nDictionary = {
     "⚠️ Olay akışı durduruldu, ancak sunucu iptali onaylamadı.\n\n/status ile kontrol edin ve birkaç saniye içinde /abort komutunu tekrar deneyin.",
   "stop.warn_maybe_finished": "⚠️ Olay akışı durduruldu, ancak ajan zaten bitirmiş olabilir.",
   "stop.success": "✅ Ajan işlemi kesildi. Bu çalışmadan başka mesaj gönderilmeyecek.",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy":
     "⚠️ Sinyal gönderildi, ancak ajan hâlâ meşgul.\n\nOlay akışı zaten kapalı, bu yüzden ara mesaj gönderilmeyecek.",
   "stop.warn_timeout":
@@ -285,6 +290,7 @@ export const tr: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ OpenCode Sunucusu zaten harici bir süreç olarak çalışıyor\n\nSürüm: {version}\n\nBu sunucu bot tarafından başlatılmadı, bu yüzden /opencode-stop onu durduramaz.",
   "opencode_start.already_running": "✅ OpenCode Sunucusu zaten çalışıyor\n\nSürüm: {version}",
+  "opencode_start.connected": "✅ Çalışan bir OpenCode Sunucusuna bağlanıldı\n{url} · v{version}",
   "opencode_start.remote_configured":
     "⚠️ /opencode_start yalnızca yerel bir OpenCode Sunucusu ile çalışır.",
   "opencode_start.starting": "🔄 OpenCode Sunucusu başlatılıyor...",

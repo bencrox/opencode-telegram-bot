@@ -72,14 +72,17 @@ export const en = {
   "bot.thinking": "💭 Thinking...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ Working",
-  "progress.compact.finished_header": "✅ Finished Work",
   "progress.compact.thinking": "💭 Thinking...",
   "progress.compact.responding": "✍️ Writing answer...",
   "progress.compact.waiting_question": "❓ Waiting for your answer...",
   "progress.compact.waiting_permission": "🔐 Waiting for permission...",
   "progress.compact.retrying": "🔁 Retrying...",
   "progress.compact.task": "🤖 Running Task",
-  "progress.compact.done": "{header}\ntool calls: {tools} · changed files: {files}",
+  "progress.compact.count.commands": "commands: {count}",
+  "progress.compact.count.edits": "edits: {count}",
+  "progress.compact.count.reads": "reads: {count}",
+  "progress.compact.count.tools": "tools: {count}",
+  "progress.compact.count.changed_files": "changed files: {count}",
   "bot.project_not_selected":
     "🏗 Project is not selected.\n\nFirst select a project with /projects.",
   "bot.creating_session": "🔄 Creating a new session...",
@@ -258,7 +261,7 @@ export const en = {
     "🏗 Project is not selected.\n\nFirst select a project with /projects.",
   "detach.no_active_session": "ℹ️ Bot is already detached from any session.",
   "detach.success":
-    "✅ Detached from session: {title}\n\nThe OpenCode session was not stopped. If it is still running, it will continue separately. To check it later, select it again via /sessions.",
+    "✅ Detached from session: {title}\n\nThe OpenCode session was not stopped. If it is still running, it will continue separately. To check it later, select it again via /recent.",
   "detach.error": "🔴 Failed to detach from the current session.",
 
   "new.project_not_selected":
@@ -275,6 +278,8 @@ export const en = {
     "⚠️ Event stream stopped, but server did not confirm abort.\n\nCheck /status and retry /abort in a few seconds.",
   "stop.warn_maybe_finished": "⚠️ Event stream stopped, but the agent may have already finished.",
   "stop.success": "✅ Agent action interrupted. No more messages from this run will be sent.",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy":
     "⚠️ Signal sent, but agent is still busy.\n\nEvent stream is already disabled, so no intermediate messages will be sent.",
   "stop.warn_timeout":
@@ -287,6 +292,7 @@ export const en = {
   "opencode_start.already_running_external":
     "✅ OpenCode Server is already running as an external process\n\nVersion: {version}\n\nThis server was not started by bot, so /opencode-stop cannot stop it.",
   "opencode_start.already_running": "✅ OpenCode Server is already running\n\nVersion: {version}",
+  "opencode_start.connected": "✅ Connected to a running OpenCode Server\n{url} · v{version}",
   "opencode_start.remote_configured": "⚠️ /opencode_start works only with a local OpenCode Server.",
   "opencode_start.starting": "🔄 Starting OpenCode Server...",
   "opencode_start.start_error":

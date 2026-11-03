@@ -10,11 +10,13 @@ export async function resetSingletonState(): Promise<void> {
     { __resetStreamThrottleForTests },
     { telegramOutageNoticeService },
     { __resetServerHealthStateForTests },
+    { __resetOpencodeServerTargetForTests },
     modelSelectionModule,
     promptHandoverDeliveryModule,
     readyRefreshModule,
     configReloadModule,
     loggerModule,
+    attachServiceModule,
   ] = await Promise.all([
     import("../../src/opencode/events.js"),
     import("../../src/app/services/session-cache-service.js"),
@@ -26,11 +28,13 @@ export async function resetSingletonState(): Promise<void> {
     import("../../src/bot/streaming/stream-throttle.js"),
     import("../../src/app/services/telegram-outage-notice-service.js"),
     import("../../src/opencode/server-health.js"),
+    import("../../src/opencode/server-target.js"),
     import("../../src/app/services/model-selection-service.js"),
     import("../../src/bot/handlers/prompt-handover.js"),
     import("../../src/opencode/ready-refresh.js"),
     import("../../src/app/services/config-reload-service.js"),
     import("../../src/utils/logger.js"),
+    import("../../src/app/services/attach-service.js"),
   ]);
 
   stopEventListening();
@@ -43,6 +47,7 @@ export async function resetSingletonState(): Promise<void> {
   telegramOutageNoticeService.__resetForTests();
   __resetSessionDirectoryCacheForTests();
   __resetServerHealthStateForTests();
+  __resetOpencodeServerTargetForTests();
 
   // Files that mock these modules may leave the reset out of the mock.
   if (
@@ -78,5 +83,12 @@ export async function resetSingletonState(): Promise<void> {
     typeof loggerModule.__resetLoggerForTests === "function"
   ) {
     loggerModule.__resetLoggerForTests();
+  }
+
+  if (
+    "__resetAttachRestoreForTests" in attachServiceModule &&
+    typeof attachServiceModule.__resetAttachRestoreForTests === "function"
+  ) {
+    attachServiceModule.__resetAttachRestoreForTests();
   }
 }

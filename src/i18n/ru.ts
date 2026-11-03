@@ -72,14 +72,17 @@ export const ru: I18nDictionary = {
   "bot.thinking": "💭 Думаю...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ Работаю",
-  "progress.compact.finished_header": "✅ Работа завершена",
   "progress.compact.thinking": "💭 Думаю...",
   "progress.compact.responding": "✍️ Пишу ответ...",
   "progress.compact.waiting_question": "❓ Жду ваш ответ...",
   "progress.compact.waiting_permission": "🔐 Жду разрешение...",
   "progress.compact.retrying": "🔁 Повторяю запрос...",
   "progress.compact.task": "🤖 Выполняю задачу",
-  "progress.compact.done": "{header}\nвызовы инструментов: {tools} · изменённые файлы: {files}",
+  "progress.compact.count.commands": "команды: {count}",
+  "progress.compact.count.edits": "правки: {count}",
+  "progress.compact.count.reads": "чтения: {count}",
+  "progress.compact.count.tools": "инструменты: {count}",
+  "progress.compact.count.changed_files": "изменённые файлы: {count}",
   "bot.project_not_selected": "🏗 Проект не выбран.\n\nСначала выберите проект командой /projects.",
   "bot.creating_session": "🔄 Создаю новую сессию...",
   "bot.create_session_error":
@@ -259,7 +262,7 @@ export const ru: I18nDictionary = {
     "🏗 Проект не выбран.\n\nСначала выберите проект командой /projects.",
   "detach.no_active_session": "ℹ️ Бот уже не привязан ни к одной сессии.",
   "detach.success":
-    "✅ Отсоединился от сессии: {title}\n\nOpenCode-сессия не остановлена. Если она еще выполняется, выполнение продолжится отдельно. Чтобы проверить ее позже, снова выберите эту сессию через /sessions.",
+    "✅ Отсоединился от сессии: {title}\n\nOpenCode-сессия не остановлена. Если она еще выполняется, выполнение продолжится отдельно. Чтобы проверить ее позже, снова выберите эту сессию через /recent.",
   "detach.error": "🔴 Не удалось отсоединиться от текущей сессии.",
 
   "new.project_not_selected": "🏗 Проект не выбран.\n\nСначала выберите проект командой /projects.",
@@ -276,6 +279,8 @@ export const ru: I18nDictionary = {
     "⚠️ Поток событий остановлен, но агент мог уже завершиться к моменту запроса.",
   "stop.success":
     "✅ Действие агента прервано. Новые сообщения от текущего запуска больше не придут.",
+  "stop.success_background_running":
+    "✅ Действие агента прервано.\nФоновые операции продолжают работу: {count}\nИх ход и результаты по-прежнему появятся здесь.",
   "stop.warn_still_busy":
     "⚠️ Сигнал отправлен, но агент еще busy.\n\nПоток событий уже отключен, поэтому бот не будет присылать промежуточные сообщения.",
   "stop.warn_timeout":
@@ -290,6 +295,7 @@ export const ru: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ OpenCode Server уже запущен внешним процессом\n\nВерсия: {version}\n\nЭтот сервер не был запущен через бота, поэтому команда /opencode-stop не сможет его остановить.",
   "opencode_start.already_running": "✅ OpenCode Server уже запущен\n\nВерсия: {version}",
+  "opencode_start.connected": "✅ Подключено к запущенному OpenCode Server\n{url} · v{version}",
   "opencode_start.remote_configured":
     "⚠️ /opencode_start работает только с локальным OpenCode Server.",
   "opencode_start.starting": "🔄 Запускаю OpenCode Server...",

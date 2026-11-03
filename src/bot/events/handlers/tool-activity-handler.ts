@@ -1,4 +1,3 @@
-import { t } from "../../../i18n/index.js";
 import { logger } from "../../../utils/logger.js";
 import {
   outlivesParentTurn,
@@ -8,9 +7,11 @@ import {
 import {
   formatCompactToolActivity,
   formatCompactToolInfo,
+  formatRunningTaskLine,
   formatToolInfo,
 } from "../../../app/formatters/summary-formatter.js";
 import { renderSubagentCard } from "../../../app/formatters/subagent-formatter.js";
+import { countToolCall } from "../../../app/formatters/compact-summary-formatter.js";
 import {
   RUNNING_ICON,
   appendDuration,
@@ -88,7 +89,7 @@ function isComposing(toolInfo: ToolInfo): boolean {
 
 function getCompactToolActivity(toolInfo: ToolInfo): string {
   if (toolInfo.tool === "task") {
-    return t("progress.compact.task");
+    return formatRunningTaskLine(toolInfo.input);
   }
 
   return (
@@ -176,14 +177,11 @@ async function renderSubagentCards(
     const streamKey = getSubagentStreamKey(subagent.cardId);
     runtime.toolCallStreamer.replaceByPrefix(sessionId, SUBAGENT_STREAM_PREFIX, text, streamKey);
 
-    // A background subagent's card keeps updating after its parent's turn ends, and an
-    // interrupted one still takes the real end its subagent may report later; so does a
+    // A background subagent's card keeps updating after its parent's turn ends; so does a
     // card waiting on a nested subagent it launched in the background.
     if (
       outlivesParentTurn(subagent) &&
-      (subagent.status === "pending" ||
-        subagent.status === "running" ||
-        subagent.status === "interrupted")
+      (subagent.status === "pending" || subagent.status === "running")
     ) {
       runtime.toolCallStreamer.pinEntry(sessionId, SUBAGENT_STREAM_PREFIX, streamKey);
     } else {
@@ -372,7 +370,12 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
     if (background && isTerminal) {
       // Counted on the card it started in, which closes with it once parked.
       void runtime.compactProgressStreamer
-        .endBackgroundOperation(sessionId, callId, getDeleteCompactProgressOnFinish())
+        .endBackgroundOperation(
+          sessionId,
+          callId,
+          countToolCall(toolInfo),
+          getDeleteCompactProgressOnFinish(),
+        )
         .catch((error) => {
           logger.error("[Bot] Failed to close the progress card of a background operation", error);
         });
@@ -399,8 +402,11 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
       }
     }
 
-    if (status === "completed" && !background) {
-      runtime.compactProgressStreamer.addToolCall(sessionId, callId);
+    // A failed call counts as finished work only if it was seen running: one that
+    // failed while composing, or after the bot already ended it, was never shown.
+    const seenFailing = status === "error" && !!storedInfo && !failedWhileComposing;
+    if ((status === "completed" || seenFailing) && !background) {
+      runtime.compactProgressStreamer.addToolCall(sessionId, callId, countToolCall(toolInfo));
     }
   });
 

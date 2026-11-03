@@ -510,13 +510,15 @@ describe("bot/commands/sessions", () => {
         reply_markup: { inline_keyboard: [] },
       }),
     ]);
-    expect(safeBackgroundTaskMock).not.toHaveBeenCalled();
+    expect(safeBackgroundTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({ taskName: "sessions.releasePickOutbound" }),
+    );
     expect((ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toBe(
       t("sessions.preview.empty"),
     );
   });
 
-  it("pages past a newer prompt and shows the finished reply it answers", async () => {
+  it("pages past a newer prompt and shows the finished reply it answers plus the waiting prompt", async () => {
     mocked.sessionGetMock.mockResolvedValueOnce({
       data: createSession(0),
       error: null,
@@ -529,7 +531,7 @@ describe("bot/commands/sessions", () => {
       },
       parts:
         index === 19
-          ? [{ type: "text", text: "unanswered prompt" }]
+          ? [{ type: "text", text: "newer prompt" }]
           : [{ type: "tool" }],
     }));
     mocked.sessionMessagesMock.mockReset();
@@ -543,7 +545,7 @@ describe("bot/commands/sessions", () => {
               role: "user",
               time: { created: 100 },
             },
-            parts: [{ type: "text", text: "answered prompt" }],
+            parts: [{ type: "text", text: "older prompt" }],
           },
           {
             info: {
@@ -579,11 +581,228 @@ describe("bot/commands/sessions", () => {
     const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map(
       (call) => String(call[1]),
     );
-    expect(sent.some((text) => text.includes("answered prompt"))).toBe(true);
+    expect(sent.some((text) => text.includes("older prompt"))).toBe(true);
     expect(sent.some((text) => text.includes("finished reply"))).toBe(true);
-    expect(sent.some((text) => text.includes("unanswered prompt"))).toBe(false);
     expect(sent.some((text) => text.includes("Recent messages:"))).toBe(false);
-    expect(safeBackgroundTaskMock).not.toHaveBeenCalled();
+    const replyIndex = sent.findIndex((text) => text.includes("finished reply"));
+    const waitingIndex = sent.findIndex((text) => text.includes("newer prompt"));
+    expect(waitingIndex).toBeGreaterThan(replyIndex);
+    expect(safeBackgroundTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({ taskName: "sessions.releasePickOutbound" }),
+    );
+
+    const sendCalls = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const replyCall = sendCalls.find((call) => String(call[1]).includes("finished reply"));
+    const quoteCall = sendCalls.find((call) => String(call[1]).includes("older prompt"));
+    expect(replyCall?.[2]).toMatchObject({ link_preview_options: { is_disabled: false } });
+    expect(quoteCall?.[2]).not.toHaveProperty("link_preview_options");
+  });
+
+  it("does not wait for the deferred outbound drain when picking a session", async () => {
+    mocked.sessionGetMock.mockResolvedValueOnce({
+      data: createSession(0),
+      error: null,
+    });
+    mocked.sessionMessagesMock.mockReset();
+    mocked.sessionMessagesMock.mockResolvedValueOnce({
+      data: [
+        {
+          info: {
+            id: "user-1",
+            role: "user",
+            time: { created: 1 },
+          },
+          parts: [{ type: "text", text: "the prompt" }],
+        },
+        {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            parentID: "user-1",
+            time: { created: 2, completed: 3 },
+          },
+          parts: [{ type: "text", text: "the reply" }],
+        },
+      ],
+      error: null,
+    });
+
+    startInteractionForTest(container.interactionManager, {
+      kind: "inline",
+      expectedInput: "callback",
+      metadata: {
+        menuKind: "session",
+        messageId: 456,
+      },
+    });
+
+    const actualSafeBackgroundTask = await vi.importActual<
+      typeof import("../../../src/utils/safe-background-task.js")
+    >("../../../src/utils/safe-background-task.js");
+    safeBackgroundTaskMock.mockImplementation(actualSafeBackgroundTask.safeBackgroundTask);
+
+    const deps = createDeps();
+    const holdSpy = vi.spyOn(deps.summaryAggregator, "holdOutbound").mockReturnValue(42);
+    const drainSpy = vi
+      .spyOn(deps.summaryAggregator, "drainOutbound")
+      .mockImplementation(() => new Promise<void>(() => {}));
+
+    const ctx = createCallbackContext("session:session-1", 456);
+    await handleSessionSelect(ctx, deps);
+
+    expect(safeBackgroundTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({ taskName: "sessions.releasePickOutbound" }),
+    );
+    expect(holdSpy).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(drainSpy).toHaveBeenCalledTimes(1);
+    expect(drainSpy.mock.calls[0]?.[1]).toBe(42);
+  });
+
+  it("drains the pick hold even when the pre-drain check throws", async () => {
+    mocked.sessionGetMock.mockResolvedValueOnce({
+      data: createSession(0),
+      error: null,
+    });
+    mocked.sessionMessagesMock.mockReset();
+    mocked.sessionMessagesMock.mockResolvedValueOnce({
+      data: [
+        {
+          info: {
+            id: "user-1",
+            role: "user",
+            time: { created: 1 },
+          },
+          parts: [{ type: "text", text: "the prompt" }],
+        },
+        {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            parentID: "user-1",
+            time: { created: 2, completed: 3 },
+          },
+          parts: [{ type: "text", text: "the reply" }],
+        },
+      ],
+      error: null,
+    });
+
+    startInteractionForTest(container.interactionManager, {
+      kind: "inline",
+      expectedInput: "callback",
+      metadata: {
+        menuKind: "session",
+        messageId: 456,
+      },
+    });
+
+    const actualSafeBackgroundTask = await vi.importActual<
+      typeof import("../../../src/utils/safe-background-task.js")
+    >("../../../src/utils/safe-background-task.js");
+    safeBackgroundTaskMock.mockImplementation(actualSafeBackgroundTask.safeBackgroundTask);
+
+    const deps = createDeps();
+    vi.spyOn(deps.summaryAggregator, "holdOutbound").mockReturnValue(7);
+    vi.spyOn(deps.summaryAggregator, "hasDeferredOutbound").mockImplementation(() => {
+      throw new Error("check failed");
+    });
+    const drainSpy = vi
+      .spyOn(deps.summaryAggregator, "drainOutbound")
+      .mockImplementation(() => new Promise<void>(() => {}));
+
+    const ctx = createCallbackContext("session:session-1", 456);
+    await handleSessionSelect(ctx, deps);
+    await Promise.resolve();
+
+    expect(drainSpy).toHaveBeenCalledWith(expect.any(Number), 7);
+  });
+
+  it("drains a deferred task in the background after a pick", async () => {
+    mocked.sessionGetMock.mockResolvedValueOnce({
+      data: createSession(0),
+      error: null,
+    });
+    mocked.sessionMessagesMock.mockReset();
+    mocked.sessionMessagesMock.mockResolvedValueOnce({
+      data: [
+        {
+          info: {
+            id: "user-1",
+            role: "user",
+            time: { created: 1 },
+          },
+          parts: [{ type: "text", text: "the prompt" }],
+        },
+        {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            parentID: "user-1",
+            time: { created: 2, completed: 3 },
+          },
+          parts: [{ type: "text", text: "the reply" }],
+        },
+      ],
+      error: null,
+    });
+
+    startInteractionForTest(container.interactionManager, {
+      kind: "inline",
+      expectedInput: "callback",
+      metadata: {
+        menuKind: "session",
+        messageId: 456,
+      },
+    });
+
+    const actualSafeBackgroundTask = await vi.importActual<
+      typeof import("../../../src/utils/safe-background-task.js")
+    >("../../../src/utils/safe-background-task.js");
+    safeBackgroundTaskMock.mockImplementation(actualSafeBackgroundTask.safeBackgroundTask);
+
+    const deps = createDeps();
+    const task = vi.fn();
+    deps.summaryAggregator.holdOutbound();
+    await deps.summaryAggregator.runOutbound(task);
+    expect(task).not.toHaveBeenCalled();
+
+    const ctx = createCallbackContext("session:session-1", 456);
+    await handleSessionSelect(ctx, deps);
+
+    await vi.waitFor(() => {
+      expect(task).toHaveBeenCalledTimes(1);
+    });
+    expect(deps.summaryAggregator.hasDeferredOutbound()).toBe(false);
+  });
+
+  it("still sends the empty notice when the first history page fails", async () => {
+    mocked.sessionGetMock.mockResolvedValueOnce({
+      data: createSession(0),
+      error: null,
+    });
+    mocked.sessionMessagesMock.mockReset();
+    mocked.sessionMessagesMock.mockResolvedValueOnce({
+      data: null,
+      error: { message: "page failed" },
+    });
+
+    startInteractionForTest(container.interactionManager, {
+      kind: "inline",
+      expectedInput: "callback",
+      metadata: {
+        menuKind: "session",
+        messageId: 456,
+      },
+    });
+
+    const ctx = createCallbackContext("session:session-1", 456);
+    await handleSessionSelect(ctx, createDeps());
+
+    const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => String(call[1]),
+    );
+    expect(sent).toContain(t("sessions.preview.empty"));
   });
 
   it("does not show an in-flight reply when session status cannot be read", async () => {
@@ -635,7 +854,7 @@ describe("bot/commands/sessions", () => {
     expect(sent.some((text) => text.includes("the prompt"))).toBe(true);
   });
 
-  it("sends the empty notice when a later history page fails", async () => {
+  it("keeps the loaded page when a later history page fails", async () => {
     mocked.sessionGetMock.mockResolvedValueOnce({
       data: createSession(0),
       error: null,
@@ -668,8 +887,8 @@ describe("bot/commands/sessions", () => {
     const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map((call) =>
       String(call[1]),
     );
-    expect(sent).toContain(t("sessions.preview.empty"));
-    expect(sent.some((text) => text.includes("only a prompt"))).toBe(false);
+    expect(sent.some((text) => text.includes("only a prompt"))).toBe(true);
+    expect(sent).not.toContain(t("sessions.preview.empty"));
   });
 
   it("pulls the settings of the selected session before attaching to it", async () => {
@@ -894,6 +1113,9 @@ describe("bot/commands/sessions", () => {
     expect(assistantResponseCalls.map((call) => call[1]).join("")).not.toContain(
       "User prompt should not be forwarded",
     );
+    for (const call of assistantResponseCalls) {
+      expect(call[2]).toMatchObject({ link_preview_options: { is_disabled: false } });
+    }
   });
 
   it("does not send preview or latest assistant response for background question notifications", async () => {

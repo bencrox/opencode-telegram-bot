@@ -18,14 +18,20 @@ import { formatSessionTitle } from "../../app/formatters/session-title-formatter
 import { alert, failure } from "./feedback.js";
 import { attachToSession } from "../../app/services/attach-service.js";
 import { renderAssistantFinalPartsSafe } from "../messages/assistant-rendering.js";
-import { sendBotText, sendRenderedBotPart } from "../messages/telegram-text.js";
+import {
+  AGENT_TEXT_LINK_PREVIEW_OPTIONS,
+  sendBotText,
+  sendRenderedBotPart,
+} from "../messages/telegram-text.js";
 import {
   buildSessionPickQuote,
   findEligibleReply,
   findLatestUserPrompt,
   findMessageById,
+  findPendingUserPrompt,
   type SessionPickMessage,
 } from "../../app/services/session-pick-reply.js";
+import type { QuotedNotification } from "../../app/services/quoted-notification.js";
 import {
   buildSessionSelectionMenuView,
   parseBackgroundSessionCallback,
@@ -137,11 +143,12 @@ export async function selectSessionById(
 
   const deliverPick = options.postSelectAction === "preview" && Boolean(ctx.chat);
   let pickMessages: SessionPickMessage[] | null = null;
+  let pickGeneration: number | null = null;
   let pickBusy = false;
   if (deliverPick) {
     pickBusy = await readSessionBusy(session.id, currentProject.worktree);
     pickMessages = await loadSessionPickMessages(session.id, currentProject.worktree, pickBusy);
-    deps.summaryAggregator.holdOutbound();
+    pickGeneration = deps.summaryAggregator.holdOutbound();
   }
 
   try {
@@ -217,8 +224,8 @@ export async function selectSessionById(
       }
     }
   } finally {
-    if (deliverPick) {
-      await releaseSessionPickHold(deps.summaryAggregator);
+    if (deliverPick && pickGeneration !== null) {
+      releaseSessionPickHold(deps.summaryAggregator, pickGeneration);
     }
   }
 
@@ -373,13 +380,27 @@ function waitForSessionPickSend(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, sessionPickSendGapMs()));
 }
 
-async function releaseSessionPickHold(
+/**
+ * Releases the outbound hold in the background: the deferred live-stream updates are
+ * replayed at a send gap, and awaiting that here would block grammY's sequential update
+ * loop for as long as the picked session keeps streaming.
+ */
+function releaseSessionPickHold(
   aggregator: SessionSelectDeps["summaryAggregator"],
-): Promise<void> {
-  if (aggregator.hasDeferredOutbound()) {
-    await waitForSessionPickSend();
-  }
-  await aggregator.drainOutbound(sessionPickSendGapMs());
+  generation: number,
+): void {
+  safeBackgroundTask({
+    taskName: "sessions.releasePickOutbound",
+    task: async () => {
+      try {
+        if (aggregator.hasDeferredOutbound()) {
+          await waitForSessionPickSend();
+        }
+      } finally {
+        await aggregator.drainOutbound(sessionPickSendGapMs(), generation);
+      }
+    },
+  });
 }
 
 async function readSessionBusy(sessionId: string, directory: string): Promise<boolean> {
@@ -416,7 +437,9 @@ async function loadSessionPickMessages(
 
       if (error || !data) {
         logger.warn("[Sessions] Failed to fetch session messages for pick:", error);
-        return null;
+        // Keep the pages already loaded: a failing cursor must not turn a readable
+        // transcript into "No recent messages".
+        return loaded.length > 0 ? loaded : null;
       }
 
       const pageMessages = data as SessionPickMessage[];
@@ -456,7 +479,7 @@ async function loadSessionPickMessages(
     }
   } catch (err) {
     logger.error("[Sessions] Error loading session messages for pick:", err);
-    return null;
+    return loaded.length > 0 ? loaded : null;
   }
 }
 
@@ -482,6 +505,25 @@ async function loadParentMessage(
   }
 }
 
+async function sendPickQuote(
+  api: Context["api"],
+  chatId: number,
+  quote: QuotedNotification,
+): Promise<void> {
+  await waitForSessionPickSend();
+  try {
+    await sendBotText({
+      api,
+      chatId,
+      text: quote.text,
+      rawFallbackText: quote.rawFallbackText,
+      format: "markdown_v2",
+    });
+  } catch (err) {
+    logger.error("[Sessions] Failed to send the session pick quote:", err);
+  }
+}
+
 async function sendSessionPickTranscript(
   api: Context["api"],
   chatId: number,
@@ -504,18 +546,7 @@ async function sendSessionPickTranscript(
 
   const quote = quoteSource ? buildSessionPickQuote(quoteSource) : null;
   if (quote) {
-    await waitForSessionPickSend();
-    try {
-      await sendBotText({
-        api,
-        chatId,
-        text: quote.text,
-        rawFallbackText: quote.rawFallbackText,
-        format: "markdown_v2",
-      });
-    } catch (err) {
-      logger.error("[Sessions] Failed to send the last user input quote:", err);
-    }
+    await sendPickQuote(api, chatId, quote);
   } else if (!reply) {
     await waitForSessionPickSend();
     try {
@@ -532,7 +563,15 @@ async function sendSessionPickTranscript(
   const parts = renderAssistantFinalPartsSafe(reply.text);
   for (const part of parts) {
     await waitForSessionPickSend();
-    await sendRenderedBotPart({ api, chatId, part });
+    await sendRenderedBotPart({ api, chatId, part, options: AGENT_TEXT_LINK_PREVIEW_OPTIONS });
+  }
+
+  // A message sent after the shown reply started is still waiting for its own reply: show it
+  // too, so the picked session does not look like the message never went through.
+  const pendingPrompt = messages ? findPendingUserPrompt(messages, reply.created) : null;
+  const pendingQuote = pendingPrompt ? buildSessionPickQuote(pendingPrompt) : null;
+  if (pendingQuote) {
+    await sendPickQuote(api, chatId, pendingQuote);
   }
 }
 
@@ -597,6 +636,7 @@ async function sendLatestAssistantResponse(
       api,
       chatId,
       part,
+      options: AGENT_TEXT_LINK_PREVIEW_OPTIONS,
     });
   }
 }

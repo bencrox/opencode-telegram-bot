@@ -80,14 +80,17 @@ export const id: I18nDictionary = {
   "bot.thinking": "💭 Berpikir...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ Bekerja",
-  "progress.compact.finished_header": "✅ Pekerjaan Selesai",
   "progress.compact.thinking": "💭 Berpikir...",
   "progress.compact.responding": "✍️ Menulis jawaban...",
   "progress.compact.waiting_question": "❓ Menunggu jawabanmu...",
   "progress.compact.waiting_permission": "🔐 Menunggu izin...",
   "progress.compact.retrying": "🔁 Mencoba lagi...",
   "progress.compact.task": "🤖 Menjalankan Tugas",
-  "progress.compact.done": "{header}\npanggilan tool: {tools} · file diubah: {files}",
+  "progress.compact.count.commands": "perintah: {count}",
+  "progress.compact.count.edits": "suntingan: {count}",
+  "progress.compact.count.reads": "pembacaan: {count}",
+  "progress.compact.count.tools": "tool: {count}",
+  "progress.compact.count.changed_files": "file diubah: {count}",
   "bot.project_not_selected": "🏗 Proyek belum dipilih.\n\nPilih dulu proyek dengan /projects.",
   "bot.creating_session": "🔄 Membuat sesi baru...",
   "bot.create_session_error":
@@ -259,7 +262,7 @@ export const id: I18nDictionary = {
   "detach.project_not_selected": "🏗 Proyek belum dipilih.\n\nPilih dulu proyek dengan /projects.",
   "detach.no_active_session": "ℹ️ Bot sudah terlepas dari sesi mana pun.",
   "detach.success":
-    "✅ Terlepas dari sesi: {title}\n\nSesi OpenCode tidak dihentikan. Jika masih berjalan, sesi akan lanjut sendiri. Untuk memeriksanya nanti, pilih lagi lewat /sessions.",
+    "✅ Terlepas dari sesi: {title}\n\nSesi OpenCode tidak dihentikan. Jika masih berjalan, sesi akan lanjut sendiri. Untuk memeriksanya nanti, pilih lagi lewat /recent.",
   "detach.error": "🔴 Gagal melepaskan dari sesi saat ini.",
 
   "new.project_not_selected": "🏗 Proyek belum dipilih.\n\nPilih dulu proyek dengan /projects.",
@@ -275,6 +278,8 @@ export const id: I18nDictionary = {
   "stop.warn_maybe_finished": "⚠️ Stream event dihentikan, tetapi agent mungkin sudah selesai.",
   "stop.success":
     "✅ Aksi agent dihentikan. Tidak ada lagi pesan dari tugas ini yang akan dikirim.",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy":
     "⚠️ Sinyal terkirim, tetapi agent masih sibuk.\n\nStream event sudah dinonaktifkan, jadi tidak ada pesan perantara yang akan dikirim.",
   "stop.warn_timeout":
@@ -288,6 +293,8 @@ export const id: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ Server OpenCode sudah berjalan sebagai proses eksternal\n\nVersi: {version}\n\nServer ini tidak dimulai oleh bot, jadi /opencode-stop tidak bisa menghentikannya.",
   "opencode_start.already_running": "✅ Server OpenCode sudah berjalan\n\nVersi: {version}",
+  "opencode_start.connected":
+    "✅ Terhubung ke Server OpenCode yang sedang berjalan\n{url} · v{version}",
   "opencode_start.remote_configured":
     "⚠️ /opencode_start hanya berfungsi dengan Server OpenCode lokal.",
   "opencode_start.starting": "🔄 Memulai Server OpenCode...",

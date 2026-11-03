@@ -1,10 +1,11 @@
 import { promises as fs } from "fs";
+import * as os from "os";
 import * as path from "path";
-import { fileURLToPath } from "url";
 import { InputFile, type Bot, type Context } from "grammy";
 import type { CodeFileData } from "../../app/formatters/summary-formatter.js";
 import { logger } from "../../utils/logger.js";
 import {
+  AGENT_TEXT_LINK_PREVIEW_OPTIONS,
   completeDraftPart,
   editRenderedBotPart,
   getTelegramRenderedPartSignature,
@@ -13,9 +14,10 @@ import {
 } from "../messages/telegram-text.js";
 import type { TelegramRenderedPart } from "../render/types.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const TEMP_DIR = path.join(__dirname, "..", "..", ".tmp");
+// The package directory can be read-only (a global npm install is owned by
+// root), so outgoing files belong under the OS temp directory, not next to the
+// compiled code. A failed mkdir there broke every tool-output upload.
+const TEMP_DIR = path.join(os.tmpdir(), "opencode-telegram-bot");
 
 type TelegramApi = Bot<Context>["api"];
 type SendMessageOptions = Parameters<TelegramApi["sendMessage"]>[2];
@@ -130,7 +132,7 @@ export class TelegramEventDelivery {
       api: destination.api,
       chatId: destination.chatId,
       part,
-      options,
+      options: { ...options, ...AGENT_TEXT_LINK_PREVIEW_OPTIONS },
       ...(allowPlainFallback === undefined ? {} : { allowPlainFallback }),
     });
   }
@@ -147,7 +149,7 @@ export class TelegramEventDelivery {
         chatId: destination.chatId,
         messageId,
         part,
-        options,
+        options: { ...options, ...AGENT_TEXT_LINK_PREVIEW_OPTIONS },
         allowPlainFallback: false,
       });
     } catch (error) {
@@ -185,7 +187,7 @@ export class TelegramEventDelivery {
       api: destination.api,
       chatId: destination.chatId,
       part,
-      options,
+      options: { ...options, ...AGENT_TEXT_LINK_PREVIEW_OPTIONS },
     });
   }
 

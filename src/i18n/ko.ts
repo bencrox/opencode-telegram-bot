@@ -81,14 +81,17 @@ export const ko: I18nDictionary = {
   "bot.thinking": "💭 생각하는 중...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ 작업 중",
-  "progress.compact.finished_header": "✅ 작업 완료",
   "progress.compact.thinking": "💭 생각하는 중...",
   "progress.compact.responding": "✍️ 답변 작성 중...",
   "progress.compact.waiting_question": "❓ 답변을 기다리는 중...",
   "progress.compact.waiting_permission": "🔐 권한 승인을 기다리는 중...",
   "progress.compact.retrying": "🔁 다시 시도하는 중...",
   "progress.compact.task": "🤖 작업 실행 중",
-  "progress.compact.done": "{header}\n도구 호출: {tools} · 변경된 파일: {files}",
+  "progress.compact.count.commands": "명령: {count}",
+  "progress.compact.count.edits": "편집: {count}",
+  "progress.compact.count.reads": "읽기: {count}",
+  "progress.compact.count.tools": "도구: {count}",
+  "progress.compact.count.changed_files": "변경된 파일: {count}",
   "bot.project_not_selected":
     "🏗 프로젝트가 선택되지 않았습니다.\n\n먼저 /projects로 프로젝트를 선택해 주세요.",
   "bot.creating_session": "🔄 새 세션을 만드는 중...",
@@ -267,7 +270,7 @@ export const ko: I18nDictionary = {
     "🏗 프로젝트가 선택되지 않았습니다.\n\n먼저 /projects로 프로젝트를 선택해 주세요.",
   "detach.no_active_session": "ℹ️ 봇은 이미 어떤 세션에도 연결되어 있지 않습니다.",
   "detach.success":
-    "✅ 세션에서 분리됨: {title}\n\nOpenCode 세션은 중지되지 않았습니다. 아직 실행 중이라면 별도로 계속 진행됩니다. 나중에 확인하려면 /sessions에서 다시 선택하세요.",
+    "✅ 세션에서 분리됨: {title}\n\nOpenCode 세션은 중지되지 않았습니다. 아직 실행 중이라면 별도로 계속 진행됩니다. 나중에 확인하려면 /recent에서 다시 선택하세요.",
   "detach.error": "🔴 현재 세션에서 분리하지 못했습니다.",
 
   "new.project_not_selected":
@@ -284,6 +287,8 @@ export const ko: I18nDictionary = {
     "⚠️ 이벤트 스트림은 중지되었지만 서버가 중단을 확인하지 않았습니다.\n\n/status를 확인하고 몇 초 후 /abort를 다시 시도해 주세요.",
   "stop.warn_maybe_finished": "⚠️ 이벤트 스트림이 중지되었지만 에이전트가 이미 작업을 마쳤을 수도 있습니다.",
   "stop.success": "✅ 에이전트 작업이 중단되었습니다. 이 실행의 추가 메시지는 더 이상 전송되지 않습니다.",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy":
     "⚠️ 신호를 보냈지만 에이전트가 아직 작업 중입니다.\n\n이벤트 스트림이 이미 비활성화되어 중간 메시지는 전송되지 않습니다.",
   "stop.warn_timeout":
@@ -296,6 +301,7 @@ export const ko: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ OpenCode 서버가 외부 프로세스로 이미 실행 중입니다\n\n버전: {version}\n\n이 서버는 봇이 시작한 것이 아니므로 /opencode-stop으로 중지할 수 없습니다.",
   "opencode_start.already_running": "✅ OpenCode 서버가 이미 실행 중입니다\n\n버전: {version}",
+  "opencode_start.connected": "✅ 실행 중인 OpenCode 서버에 연결했습니다\n{url} · v{version}",
   "opencode_start.remote_configured": "⚠️ /opencode_start는 로컬 OpenCode 서버에서만 동작합니다.",
   "opencode_start.starting": "🔄 OpenCode 서버를 시작하는 중...",
   "opencode_start.start_error":

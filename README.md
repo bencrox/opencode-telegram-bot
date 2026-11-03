@@ -266,7 +266,7 @@ Configuration can be provided through process environment variables or an `.env`
 | `TASK_LIMIT`                               | Maximum number of scheduled tasks that can exist at once                                                              |    No    | `10`                     |
 | `SCHEDULED_TASK_EXECUTION_TIMEOUT_MINUTES` | Maximum time the bot waits for one scheduled task run before marking it failed                                        |    No    | `120`                    |
 | `SCHEDULED_TASK_DISABLE_NOTIFICATION`      | Send scheduled task result/error messages without Telegram push notifications                                         |    No    | `false`                  |
-| `BASH_TOOL_DISPLAY_MAX_LENGTH`             | Maximum displayed length for `bash` tool commands in Telegram summaries; longer commands are truncated                |    No    | `128`                    |
+| `BASH_TOOL_DISPLAY_MAX_LENGTH`             | Maximum displayed length for `bash` commands and `execute` code in Telegram summaries; longer ones are truncated      |    No    | `128`                    |
 | `TRACK_BACKGROUND_SESSIONS`                | Track detached/non-current sessions in the current selected project/worktree and send short notifications             |    No    | `true`                   |
 | `MESSAGE_FORMAT_MODE`                      | Assistant reply formatting mode: `markdown` (native Telegram rich blocks) or `raw` (plain text)                       |    No    | `markdown`               |
 | `MESSAGE_MERGE_WINDOW_MS`                  | Merge Telegram-split long text messages into one prompt after this wait window (ms); `0` disables merging             |    No    | `1500`                   |
@@ -298,7 +298,7 @@ Logs are written to `./logs` when running from sources and to the runtime config
 
 Runtime preferences are changed from `/settings` and stored in `settings.json`:
 
-- Compact output mode: one progress message per stretch of work between replies and prompts, from the moment the model starts thinking or writing in that stretch. It is removed or marked finished when the reply or prompt lands, or when the run ends if nothing followed
+- Compact output mode: one progress message per stretch of work between replies and prompts, from the moment the model starts thinking or writing in that stretch. When the reply or prompt lands, or when the run ends if nothing followed, it turns into one line of what was done (`✅ commands: 3, reads: 4, changed files: 2`), or is removed when there is nothing to count
 - Delete progress on finish: available while compact output mode is on, removes each of those progress messages when that stretch finishes
 - Thinking content display
 - Assistant run footer display

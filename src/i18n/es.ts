@@ -75,15 +75,17 @@ export const es: I18nDictionary = {
   "bot.thinking": "💭 Pensando...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ Trabajando",
-  "progress.compact.finished_header": "✅ Trabajo terminado",
   "progress.compact.thinking": "💭 Pensando...",
   "progress.compact.responding": "✍️ Escribiendo respuesta...",
   "progress.compact.waiting_question": "❓ Esperando tu respuesta...",
   "progress.compact.waiting_permission": "🔐 Esperando permiso...",
   "progress.compact.retrying": "🔁 Reintentando...",
   "progress.compact.task": "🤖 Tarea en ejecución",
-  "progress.compact.done":
-    "{header}\nllamadas de herramientas: {tools} · archivos modificados: {files}",
+  "progress.compact.count.commands": "comandos: {count}",
+  "progress.compact.count.edits": "ediciones: {count}",
+  "progress.compact.count.reads": "lecturas: {count}",
+  "progress.compact.count.tools": "herramientas: {count}",
+  "progress.compact.count.changed_files": "archivos modificados: {count}",
   "bot.project_not_selected":
     "🏗 No hay un proyecto seleccionado.\n\nPrimero selecciona un proyecto con /projects.",
   "bot.creating_session": "🔄 Creando una sesión nueva...",
@@ -267,7 +269,7 @@ export const es: I18nDictionary = {
     "🏗 No hay un proyecto seleccionado.\n\nPrimero selecciona un proyecto con /projects.",
   "detach.no_active_session": "ℹ️ El bot ya no está conectado a ninguna sesión.",
   "detach.success":
-    "✅ Desconectado de la sesión: {title}\n\nLa sesión de OpenCode no se detuvo. Si todavía está en ejecución, continuará por separado. Para revisarla más tarde, selecciónala de nuevo con /sessions.",
+    "✅ Desconectado de la sesión: {title}\n\nLa sesión de OpenCode no se detuvo. Si todavía está en ejecución, continuará por separado. Para revisarla más tarde, selecciónala de nuevo con /recent.",
   "detach.error": "🔴 No se pudo desconectar de la sesión actual.",
 
   "new.project_not_selected":
@@ -286,6 +288,8 @@ export const es: I18nDictionary = {
     "⚠️ Flujo de eventos detenido, pero el agente podría haber terminado ya.",
   "stop.success":
     "✅ Acción del agente interrumpida. No se enviarán más mensajes de esta ejecución.",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy":
     "⚠️ Señal enviada, pero el agente sigue ocupado.\n\nEl flujo de eventos ya está deshabilitado, así que no se enviarán mensajes intermedios.",
   "stop.warn_timeout":
@@ -300,6 +304,7 @@ export const es: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ OpenCode Server ya está en ejecución como un proceso externo\n\nVersión: {version}\n\nEste servidor no fue iniciado por el bot, por lo que /opencode-stop no puede detenerlo.",
   "opencode_start.already_running": "✅ OpenCode Server ya está en ejecución\n\nVersión: {version}",
+  "opencode_start.connected": "✅ Conectado a un OpenCode Server en ejecución\n{url} · v{version}",
   "opencode_start.remote_configured":
     "⚠️ /opencode_start solo funciona con un OpenCode Server local.",
   "opencode_start.starting": "🔄 Iniciando OpenCode Server...",

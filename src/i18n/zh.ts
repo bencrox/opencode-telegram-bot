@@ -67,14 +67,17 @@ export const zh: I18nDictionary = {
   "bot.thinking": "💭 思考中...",
   "progress.compact.activity": "{header}\n{activity}",
   "progress.compact.working_header": "⏳ 工作中",
-  "progress.compact.finished_header": "✅ 工作完成",
   "progress.compact.thinking": "💭 思考中...",
   "progress.compact.responding": "✍️ 正在撰写回复...",
   "progress.compact.waiting_question": "❓ 等待你的回答...",
   "progress.compact.waiting_permission": "🔐 等待权限...",
   "progress.compact.retrying": "🔁 正在重试...",
   "progress.compact.task": "🤖 任务运行中",
-  "progress.compact.done": "{header}\n工具调用：{tools} · 已更改文件：{files}",
+  "progress.compact.count.commands": "命令：{count}",
+  "progress.compact.count.edits": "编辑：{count}",
+  "progress.compact.count.reads": "读取：{count}",
+  "progress.compact.count.tools": "工具：{count}",
+  "progress.compact.count.changed_files": "已更改文件：{count}",
   "bot.project_not_selected": "🏗 未选择项目。\n\n请先使用 /projects 选择一个项目。",
   "bot.creating_session": "🔄 正在创建新会话...",
   "bot.create_session_error": "🔴 创建会话失败。请重试 /new，或使用 /status 检查服务器状态。",
@@ -238,7 +241,7 @@ export const zh: I18nDictionary = {
   "detach.project_not_selected": "🏗 未选择项目。\n\n请先使用 /projects 选择一个项目。",
   "detach.no_active_session": "ℹ️ 机器人当前未附加到任何会话。",
   "detach.success":
-    "✅ 已从会话分离：{title}\n\nOpenCode 会话未停止。如果它仍在运行，将继续独立执行。稍后可通过 /sessions 重新选择它来查看。",
+    "✅ 已从会话分离：{title}\n\nOpenCode 会话未停止。如果它仍在运行，将继续独立执行。稍后可通过 /recent 重新选择它来查看。",
   "detach.error": "🔴 无法从当前会话分离。",
 
   "new.project_not_selected": "🏗 未选择项目。\n\n请先使用 /projects 选择一个项目。",
@@ -251,6 +254,8 @@ export const zh: I18nDictionary = {
     "⚠️ 事件流已停止，但服务器未确认中止。\n\n检查 /status，并在几秒后重试 /abort。",
   "stop.warn_maybe_finished": "⚠️ 事件流已停止，但代理可能已完成。",
   "stop.success": "✅ 代理操作已中断。本次运行的后续消息将不再发送。",
+  "stop.success_background_running":
+    "✅ Agent action interrupted.\nBackground operations keep running: {count}\nTheir progress and results will still appear here.",
   "stop.warn_still_busy": "⚠️ 信号已发送，但代理仍在忙。\n\n事件流已禁用，因此不会发送中间消息。",
   "stop.warn_timeout": "⚠️ 中止请求超时。\n\n事件流已禁用，请在几秒后重试 /abort。",
   "stop.warn_local_only": "⚠️ 已在本地停止事件流，但服务器端中止失败。",
@@ -261,6 +266,7 @@ export const zh: I18nDictionary = {
   "opencode_start.already_running_external":
     "✅ OpenCode 服务器正作为外部进程运行\n\n版本：{version}\n\n该服务器不是由机器人启动，因此 /opencode-stop 无法停止它。",
   "opencode_start.already_running": "✅ OpenCode 服务器已在运行\n\n版本：{version}",
+  "opencode_start.connected": "✅ 已连接到正在运行的 OpenCode 服务器\n{url} · v{version}",
   "opencode_start.remote_configured": "⚠️ /opencode_start 仅适用于本地 OpenCode 服务器。",
   "opencode_start.starting": "🔄 正在启动 OpenCode 服务器...",
   "opencode_start.start_error":

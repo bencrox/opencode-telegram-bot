@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Context } from "grammy";
 import { config } from "../../config.js";
 import { processUserPrompt, type ProcessPromptDeps } from "./prompt.js";
@@ -36,6 +37,31 @@ export interface DocumentHandlerDeps extends ProcessPromptDeps {
     input: IncomingPrompt,
     deps: ProcessPromptDeps,
   ) => Promise<boolean>;
+}
+
+// iOS "Send as File" delivers images as application/octet-stream, leaving the
+// filename extension as the only signal of the real image type.
+const GENERIC_MIME_TYPE = "application/octet-stream";
+
+const IMAGE_MIME_TYPES_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+function resolveImageMimeType(mimeType: string, filename: string): string | null {
+  if (mimeType.startsWith("image/")) {
+    return mimeType;
+  }
+
+  if (mimeType !== GENERIC_MIME_TYPE) {
+    return null;
+  }
+
+  const extension = path.extname(filename).slice(1).toLowerCase();
+  return IMAGE_MIME_TYPES_BY_EXTENSION[extension] ?? null;
 }
 
 export async function handleDocumentMessage(
@@ -110,7 +136,8 @@ export async function handleDocumentMessage(
       return;
     }
 
-    if (mimeType.startsWith("image/")) {
+    const imageMimeType = resolveImageMimeType(mimeType, filename);
+    if (imageMimeType) {
       const storedModel = getStored();
       const capabilities = await getCapabilities(storedModel.providerID, storedModel.modelID);
 
@@ -132,17 +159,17 @@ export async function handleDocumentMessage(
       }
       const downloadedFile = await downloadFile(ctx.api, doc.file_id);
 
-      const dataUri = toDataUri(downloadedFile.buffer, mimeType);
+      const dataUri = toDataUri(downloadedFile.buffer, imageMimeType);
 
       const filePart: FilePartInput = {
         type: "file",
-        mime: mimeType,
+        mime: imageMimeType,
         filename: filename,
         url: dataUri,
       };
 
       logger.info(
-        `[Document] Sending image (${downloadedFile.buffer.length} bytes, ${filename}, ${mimeType}) with prompt`,
+        `[Document] Sending image (${downloadedFile.buffer.length} bytes, ${filename}, ${imageMimeType}) with prompt`,
       );
 
       await submitPrompt(caption, [filePart], doc.file_size);
