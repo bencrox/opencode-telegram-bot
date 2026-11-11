@@ -8,6 +8,7 @@ export const TASK_CANCEL_CALLBACK = "task:cancel";
 export const TASKLIST_CALLBACK_PREFIX = "tasklist:";
 export const TASKLIST_OPEN_PREFIX = `${TASKLIST_CALLBACK_PREFIX}open:`;
 export const TASKLIST_DELETE_PREFIX = `${TASKLIST_CALLBACK_PREFIX}delete:`;
+export const TASKLIST_TOGGLE_PREFIX = `${TASKLIST_CALLBACK_PREFIX}toggle:`;
 export const TASKLIST_CANCEL_CALLBACK = `${TASKLIST_CALLBACK_PREFIX}cancel`;
 
 const MAX_INLINE_BUTTON_LABEL_LENGTH = 64;
@@ -21,7 +22,8 @@ function truncateText(text: string, maxLength: number): string {
 }
 
 function formatTaskButtonLabel(task: ScheduledTask): string {
-  const prefix = `[${formatTaskListBadge(task)}]`;
+  const state = task.kind === "cron" && task.enabled === false ? "💤 " : "⏰ ";
+  const prefix = `${state}[${formatTaskListBadge(task)}]`;
   const prompt = task.prompt.replace(/\s+/g, " ").trim();
   return truncateText(`${prefix} ${prompt}`, MAX_INLINE_BUTTON_LABEL_LENGTH);
 }
@@ -47,8 +49,17 @@ export function buildTaskListKeyboard(tasks: ScheduledTask[]): InlineKeyboard {
   return keyboard;
 }
 
-export function buildTaskDetailsKeyboard(taskId: string): InlineKeyboard {
-  return new InlineKeyboard()
-    .text(t("tasklist.button.delete"), `${TASKLIST_DELETE_PREFIX}${taskId}`)
+export function buildTaskDetailsKeyboard(task: ScheduledTask): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (task.kind === "cron") {
+    keyboard
+      .text(
+        t(task.enabled === false ? "task.button.enable" : "task.button.disable"),
+        `${TASKLIST_TOGGLE_PREFIX}${task.enabled === false ? "on" : "off"}:${task.id}`,
+      )
+      .row();
+  }
+  return keyboard
+    .text(t("tasklist.button.delete"), `${TASKLIST_DELETE_PREFIX}${task.id}`)
     .text(t("tasklist.button.cancel"), TASKLIST_CANCEL_CALLBACK);
 }

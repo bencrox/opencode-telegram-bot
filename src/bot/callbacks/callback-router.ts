@@ -5,6 +5,7 @@ import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
 import { handleAgentSelect } from "./agent-selection-callback-handler.js";
 import { handleCommandsCallback } from "./command-catalog-callback-handler.js";
+import { handleGoalCallback } from "./goal-callback-handler.js";
 import { handleCompactConfirm, handleCompactDetails } from "./context-control-callback-handler.js";
 import { handleLsCallback, handleOpenCallback } from "./file-browser-callback-handler.js";
 import { handleInlineMenuCancel } from "./inline-menu-cancel-callback-handler.js";
@@ -17,7 +18,7 @@ import {
   handleModelSelect,
 } from "./model-selection-callback-handler.js";
 import { handlePermissionCallback } from "./permission-callback-handler.js";
-import { handleProjectSelect } from "./project-callback-handler.js";
+import { handleProjectSearchCallback, handleProjectSelect } from "./project-callback-handler.js";
 import { handlePromptAttachmentCancel } from "./prompt-attachment-callback-handler.js";
 import { handleQuestionCallback } from "./question-callback-handler.js";
 import { handleRecentSelect } from "./recent-callback-handler.js";
@@ -25,6 +26,7 @@ import { handleRenameCancel } from "./rename-callback-handler.js";
 import { handleSettingsCallback } from "./settings-callback-handler.js";
 import {
   handleBackgroundSessionOpen,
+  handleSessionSearchCallback,
   handleSessionSelect,
 } from "./session-callback-handler.js";
 import { handleSkillsCallback } from "./skills-catalog-callback-handler.js";
@@ -82,6 +84,14 @@ export function registerCallbackRouter(bot: Bot<Context>, deps: CallbackRouterDe
       {
         name: "commands",
         handlers: [(ctx) => handleCommandsCallback(ctx, botDeps)],
+        errorScope: "interaction",
+      },
+    ],
+    [
+      "goal",
+      {
+        name: "goal",
+        handlers: [(ctx) => handleGoalCallback(ctx, container)],
         errorScope: "interaction",
       },
     ],
@@ -154,7 +164,7 @@ export function registerCallbackRouter(bot: Bot<Context>, deps: CallbackRouterDe
       "projects",
       {
         name: "projects",
-        handlers: [(ctx) => handleProjectSelect(ctx, container)],
+        handlers: [(ctx) => handleProjectSearchCallback(ctx, container), (ctx) => handleProjectSelect(ctx, container)],
         errorScope: "interaction",
       },
     ],
@@ -182,7 +192,10 @@ export function registerCallbackRouter(bot: Bot<Context>, deps: CallbackRouterDe
       "session",
       {
         name: "session",
-        handlers: [(ctx) => handleSessionSelect(ctx, botDeps)],
+        handlers: [
+          (ctx) => handleSessionSearchCallback(ctx, botDeps),
+          (ctx) => handleSessionSelect(ctx, botDeps),
+        ],
         errorScope: "interaction",
       },
     ],

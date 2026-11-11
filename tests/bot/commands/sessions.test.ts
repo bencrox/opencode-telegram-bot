@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, Context } from "grammy";
 import {
   handleBackgroundSessionOpen,
+  handleSessionSearchCallback,
+  handleSessionSearchTextInput,
   handleSessionSelect,
 } from "../../../src/bot/callbacks/session-callback-handler.js";
 import { sessionsCommand } from "../../../src/bot/commands/sessions-command.js";
@@ -18,6 +20,7 @@ const mocked = vi.hoisted(() => ({
     id: "project-1",
     worktree: "/repo",
   } as { id: string; worktree: string; name?: string } | null,
+  currentSession: null as { id: string; title: string; directory: string } | null,
   sessionListMock: vi.fn(),
   fileListMock: vi.fn(),
   sessionGetMock: vi.fn(),
@@ -41,8 +44,17 @@ const mocked = vi.hoisted(() => ({
   })),
   keyboardGetContextInfoMock: vi.fn(() => null),
   resolveProjectAgentMock: vi.fn(async () => "build"),
+  getStoredAgentMock: vi.fn(() => "build"),
+  selectAgentMock: vi.fn(),
+  selectModelMock: vi.fn(),
   attachToSessionMock: vi.fn(),
   ensureEventSubscriptionMock: vi.fn(),
+  switchToProjectMock: vi.fn(
+    async (_ctx: unknown, project: { id: string; worktree: string; name?: string }) => {
+      mocked.currentProject = project;
+      return { inline_keyboard: [] };
+    },
+  ),
 }));
 
 vi.mock("../../../src/opencode/client.js", () => ({
@@ -61,6 +73,8 @@ vi.mock("../../../src/opencode/client.js", () => ({
 
 vi.mock("../../../src/app/stores/settings-store.js", () => ({
   getCurrentProject: vi.fn(() => mocked.currentProject),
+  getCurrentSession: vi.fn(() => mocked.currentSession),
+  getSessionReplyReadState: vi.fn(() => undefined),
 }));
 
 vi.mock("../../../src/app/services/session-service.js", () => ({
@@ -69,10 +83,13 @@ vi.mock("../../../src/app/services/session-service.js", () => ({
 
 vi.mock("../../../src/app/services/agent-selection-service.js", () => ({
   resolveProjectAgent: mocked.resolveProjectAgentMock,
+  getStoredAgent: mocked.getStoredAgentMock,
+  selectAgent: mocked.selectAgentMock,
 }));
 
 vi.mock("../../../src/app/services/model-selection-service.js", () => ({
   getStoredModel: mocked.getStoredModelMock,
+  selectModel: mocked.selectModelMock,
 }));
 
 vi.mock("../../../src/app/services/session-settings-service.js", () => ({
@@ -81,6 +98,10 @@ vi.mock("../../../src/app/services/session-settings-service.js", () => ({
 
 vi.mock("../../../src/app/services/attach-service.js", () => ({
   attachToSession: mocked.attachToSessionMock,
+}));
+
+vi.mock("../../../src/app/services/project-switch-service.js", () => ({
+  switchToProject: mocked.switchToProjectMock,
 }));
 
 vi.mock("../../../src/utils/safe-background-task.js", () => ({
@@ -170,7 +191,9 @@ function createCallbackContext(data: string, messageId: number): Context {
       sendMessage: vi.fn().mockResolvedValue({ message_id: 888 }),
       sendRichMessage: vi
         .fn()
-        .mockRejectedValue(Object.assign(new Error("Bad Request: rich message unavailable"), { error_code: 400 })),
+        .mockRejectedValue(
+          Object.assign(new Error("Bad Request: rich message unavailable"), { error_code: 400 }),
+        ),
       deleteMessage: vi.fn().mockResolvedValue(true),
       editMessageText: vi.fn().mockResolvedValue(true),
     },
@@ -219,6 +242,7 @@ describe("bot/commands/sessions", () => {
       id: "project-1",
       worktree: "/repo",
     };
+    mocked.currentSession = null;
 
     mocked.sessionListMock.mockReset();
     mocked.fileListMock.mockReset().mockResolvedValue({ data: [], error: undefined });
@@ -246,6 +270,9 @@ describe("bot/commands/sessions", () => {
     mocked.pinnedOnModelChangeMock.mockResolvedValue(undefined);
     mocked.resolveProjectAgentMock.mockReset();
     mocked.resolveProjectAgentMock.mockResolvedValue("build");
+    mocked.getStoredAgentMock.mockClear();
+    mocked.selectAgentMock.mockReset();
+    mocked.selectModelMock.mockReset();
     mocked.attachToSessionMock.mockReset();
     mocked.attachToSessionMock.mockResolvedValue({
       busy: false,
@@ -254,6 +281,7 @@ describe("bot/commands/sessions", () => {
       restoredPermissions: 0,
     });
     mocked.ensureEventSubscriptionMock.mockReset();
+    mocked.switchToProjectMock.mockClear();
     safeBackgroundTaskMock.mockReset();
   });
 
@@ -271,10 +299,179 @@ describe("bot/commands/sessions", () => {
     });
 
     const keyboardRows = getKeyboardButtons(ctx);
-    expect(keyboardRows[0]?.[0]?.callback_data).toBe("session:session-1");
-    expect(keyboardRows[9]?.[0]?.callback_data).toBe("session:session-10");
-    expect(keyboardRows[10]?.[0]?.callback_data).toBe("session:page:1");
-    expect(keyboardRows[11]?.[0]?.callback_data).toBe("inline:cancel:session");
+    expect(keyboardRows[0]?.[0]?.callback_data).toBe("session:search");
+    expect(keyboardRows[1]?.[0]?.callback_data).toBe("session:session-1");
+    expect(keyboardRows[10]?.[0]?.callback_data).toBe("session:session-10");
+    expect(keyboardRows[11]?.[0]?.callback_data).toBe("session:page:1");
+    expect(keyboardRows[12]?.[0]?.callback_data).toBe("inline:cancel:session");
+  });
+
+  it("searches all root sessions by title or id and paginates results", async () => {
+    const sessions = Array.from({ length: 12 }, (_, index) => createSession(index));
+    mocked.sessionListMock.mockResolvedValue({ data: sessions, error: null });
+    startInteractionForTest(container.interactionManager, {
+      kind: "inline",
+      expectedInput: "callback",
+      metadata: { menuKind: "session", messageId: 456 },
+    });
+    const search = createCallbackContext("session:search", 456);
+    await handleSessionSearchCallback(search, createDeps());
+    expect(search.deleteMessage).toHaveBeenCalled();
+    const text = {
+      ...createCommandContext(),
+      message: { text: " SESSION " },
+    } as unknown as Context;
+    await handleSessionSearchTextInput(text, createDeps());
+    expect(mocked.sessionListMock).toHaveBeenCalledWith({ directory: "/repo", roots: true });
+    expect(text.reply).toHaveBeenCalledWith(
+      t("sessions.search.results", { query: " SESSION " }),
+      expect.anything(),
+    );
+    const page = createCallbackContext("session:search:page:1", 456);
+    await handleSessionSearchCallback(page, createDeps());
+    expect(page.editMessageText).toHaveBeenCalledWith(
+      t("sessions.search.results_page", { query: " SESSION ", page: 2 }),
+      expect.anything(),
+    );
+  });
+
+  it("marks the attached session in the list without moving it to the first row", async () => {
+    const sessions = Array.from({ length: 3 }, (_, index) => createSession(index));
+    mocked.sessionListMock.mockResolvedValueOnce({ data: sessions, error: null });
+    mocked.currentSession = { id: "session-2", title: "Session 2", directory: "/repo" };
+
+    const ctx = createCommandContext();
+    await sessionsCommand(ctx as never, createDeps());
+
+    const rows = getKeyboardButtons(ctx);
+    expect(rows[1]?.[0]?.text).toContain(`1. Session 1 (`);
+    expect(rows[2]?.[0]?.text?.startsWith(`2. ${t("sessions.current_marker")} Session 2 (`)).toBe(
+      true,
+    );
+  });
+
+  it("marks the attached session on a later page of search results", async () => {
+    const sessions = Array.from({ length: 12 }, (_, index) => createSession(index));
+    mocked.sessionListMock.mockResolvedValue({ data: sessions, error: null });
+    mocked.currentSession = { id: "session-12", title: "Session 12", directory: "/repo" };
+    startInteractionForTest(container.interactionManager, {
+      kind: "custom",
+      expectedInput: "text",
+      metadata: { flow: "session-search", stage: "input", token: "test" },
+    });
+
+    const ctx = { ...createCommandContext(), message: { text: "Session" } } as unknown as Context;
+    await handleSessionSearchTextInput(ctx, createDeps());
+    const options = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data?: string }>> };
+    };
+    expect(options.reply_markup.inline_keyboard[0]?.[0]?.text).not.toContain(
+      t("sessions.current_marker"),
+    );
+
+    const page = createCallbackContext("session:search:page:1", 456);
+    await handleSessionSearchCallback(page, createDeps());
+    const pageOptions = (page.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data?: string }>> };
+    };
+    expect(
+      pageOptions.reply_markup.inline_keyboard[1]?.[0]?.text?.startsWith(
+        `12. ${t("sessions.current_marker")} Session 12 (`,
+      ),
+    ).toBe(true);
+    expect(pageOptions.reply_markup.inline_keyboard[1]?.[0]?.callback_data).toBe(
+      "session:search:result:11",
+    );
+  });
+
+  it("opens the session behind the tapped search result", async () => {
+    const sessions = Array.from({ length: 3 }, (_, index) => createSession(index));
+    mocked.sessionListMock.mockResolvedValue({ data: sessions, error: null });
+    mocked.sessionGetMock.mockResolvedValue({ data: createSession(1), error: null });
+    startInteractionForTest(container.interactionManager, {
+      kind: "custom",
+      expectedInput: "text",
+      metadata: { flow: "session-search", stage: "input", token: "test" },
+    });
+
+    const text = { ...createCommandContext(), message: { text: "Session" } } as unknown as Context;
+    await handleSessionSearchTextInput(text, createDeps());
+    const options = (text.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    };
+    const resultButton = options.reply_markup.inline_keyboard[1]?.[0];
+
+    const ctx = createCallbackContext(defined(resultButton?.callback_data), 456);
+    await handleSessionSearchCallback(ctx, createDeps());
+
+    expect(mocked.sessionGetMock).toHaveBeenCalledWith({
+      sessionID: "session-2",
+      directory: "/repo",
+    });
+    expect(mocked.attachToSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ session: expect.objectContaining({ id: "session-2" }) }),
+    );
+  });
+
+  it("ignores a search result tap once another interaction holds the slot", async () => {
+    startInteractionForTest(container.interactionManager, {
+      kind: "custom",
+      expectedInput: "text",
+      metadata: { flow: "session-search", stage: "input", token: "test" },
+    });
+    mocked.sessionListMock.mockResolvedValue({ data: [createSession(0)], error: null });
+    const text = { ...createCommandContext(), message: { text: "Session" } } as unknown as Context;
+    await handleSessionSearchTextInput(text, createDeps());
+
+    startInteractionForTest(container.interactionManager, {
+      kind: "custom",
+      expectedInput: "callback",
+      metadata: { flow: "model-search", stage: "results", messageId: 456 },
+    });
+
+    const ctx = createCallbackContext("session:search:result:0", 456);
+    await handleSessionSearchCallback(ctx, createDeps());
+
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ text: t("inline.inactive_callback") }),
+    );
+    expect(mocked.sessionGetMock).not.toHaveBeenCalled();
+  });
+
+  it("caps the query at 100 characters in both the search and the heading", async () => {
+    const longQuery = "x".repeat(140);
+    mocked.sessionListMock.mockResolvedValue({ data: [], error: null });
+    startInteractionForTest(container.interactionManager, {
+      kind: "custom",
+      expectedInput: "text",
+      metadata: { flow: "session-search", stage: "input", token: "test" },
+    });
+
+    const ctx = { ...createCommandContext(), message: { text: longQuery } } as unknown as Context;
+    await handleSessionSearchTextInput(ctx, createDeps());
+
+    const capped = "x".repeat(100);
+    expect(ctx.reply).toHaveBeenCalledWith(t("sessions.search.no_results", { query: capped }), {
+      reply_markup: expect.anything(),
+    });
+    const state = container.interactionManager.getSnapshot();
+    expect(state?.metadata.query).toBe(capped);
+  });
+
+  it("keeps a blank query waiting and clears the search on fetch failure", async () => {
+    startInteractionForTest(container.interactionManager, {
+      kind: "custom",
+      expectedInput: "text",
+      metadata: { flow: "session-search", stage: "input", token: "test" },
+    });
+    const blank = { ...createCommandContext(), message: { text: "   " } } as unknown as Context;
+    await handleSessionSearchTextInput(blank, createDeps());
+    expect(mocked.sessionListMock).not.toHaveBeenCalled();
+    mocked.sessionListMock.mockResolvedValue({ error: new Error("offline") });
+    const text = { ...createCommandContext(), message: { text: "hello" } } as unknown as Context;
+    await handleSessionSearchTextInput(text, createDeps());
+    expect(text.reply).toHaveBeenCalledWith(t("sessions.fetch_error"));
+    expect(container.interactionManager.getSnapshot()).toBeNull();
   });
 
   it("leaves out sessions whose folder is gone without letting them take places on the page", async () => {
@@ -303,9 +500,9 @@ describe("bot/commands/sessions", () => {
     await sessionsCommand(ctx as never, createDeps());
 
     const keyboardRows = getKeyboardButtons(ctx);
-    expect(keyboardRows[0]?.[0]?.callback_data).toBe("session:session-3");
-    expect(keyboardRows[9]?.[0]?.callback_data).toBe("session:session-12");
-    expect(keyboardRows[10]?.[0]?.callback_data).toBe("session:page:1");
+    expect(keyboardRows[1]?.[0]?.callback_data).toBe("session:session-3");
+    expect(keyboardRows[10]?.[0]?.callback_data).toBe("session:session-12");
+    expect(keyboardRows[11]?.[0]?.callback_data).toBe("session:page:1");
   });
 
   it("lists a session OpenCode has not named yet as a new session", async () => {
@@ -317,7 +514,7 @@ describe("bot/commands/sessions", () => {
     const ctx = createCommandContext();
     await sessionsCommand(ctx as never, createDeps());
 
-    const label = getKeyboardButtons(ctx)[0]?.[0]?.text;
+    const label = getKeyboardButtons(ctx)[1]?.[0]?.text;
     expect(label).toMatch(new RegExp(`^1\\. ${t("pinned.default_session_title")} \\(`));
   });
 
@@ -383,17 +580,16 @@ describe("bot/commands/sessions", () => {
     });
     expect(ctx.editMessageText).toHaveBeenCalledTimes(1);
 
-    const [text, options] = defined((ctx.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]) as [
-      string,
-      { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } },
-    ];
+    const [text, options] = defined(
+      (ctx.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0],
+    ) as [string, { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }];
 
     expect(text).toBe(t("sessions.select_page", { page: 2 }));
     const inlineRows = options.reply_markup.inline_keyboard;
-    expect(inlineRows[0]?.[0]?.callback_data).toBe("session:session-11");
-    expect(inlineRows[1]?.[0]?.callback_data).toBe("session:session-12");
-    expect(inlineRows[2]?.[0]?.callback_data).toBe("session:page:0");
-    expect(inlineRows[3]?.[0]?.callback_data).toBe("inline:cancel:session");
+    expect(inlineRows[1]?.[0]?.callback_data).toBe("session:session-11");
+    expect(inlineRows[2]?.[0]?.callback_data).toBe("session:session-12");
+    expect(inlineRows[3]?.[0]?.callback_data).toBe("session:page:0");
+    expect(inlineRows[4]?.[0]?.callback_data).toBe("inline:cancel:session");
   });
 
   it("returns page-empty callback message when requested page has no sessions", async () => {
@@ -529,10 +725,7 @@ describe("bot/commands/sessions", () => {
         role: index === 19 ? ("user" as const) : ("assistant" as const),
         time: { created: 2000 + index, completed: 2000 + index },
       },
-      parts:
-        index === 19
-          ? [{ type: "text", text: "newer prompt" }]
-          : [{ type: "tool" }],
+      parts: index === 19 ? [{ type: "text", text: "newer prompt" }] : [{ type: "tool" }],
     }));
     mocked.sessionMessagesMock.mockReset();
     mocked.sessionMessagesMock
@@ -578,8 +771,8 @@ describe("bot/commands/sessions", () => {
       limit: 20,
       before: "page1-0",
     });
-    const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map(
-      (call) => String(call[1]),
+    const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map((call) =>
+      String(call[1]),
     );
     expect(sent.some((text) => text.includes("older prompt"))).toBe(true);
     expect(sent.some((text) => text.includes("finished reply"))).toBe(true);
@@ -799,8 +992,8 @@ describe("bot/commands/sessions", () => {
     const ctx = createCallbackContext("session:session-1", 456);
     await handleSessionSelect(ctx, createDeps());
 
-    const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map(
-      (call) => String(call[1]),
+    const sent = (ctx.api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.map((call) =>
+      String(call[1]),
     );
     expect(sent).toContain(t("sessions.preview.empty"));
   });
@@ -980,7 +1173,7 @@ describe("bot/commands/sessions", () => {
 
   it("pulls the settings when a background session notification is opened", async () => {
     const session = createSession(0);
-    mocked.sessionGetMock.mockResolvedValueOnce({ data: session, error: null });
+    mocked.sessionGetMock.mockResolvedValue({ data: session, error: null });
 
     const handled = await handleBackgroundSessionOpen(
       createCallbackContext("background-session:session-1", 456),
@@ -1024,7 +1217,7 @@ describe("bot/commands/sessions", () => {
   });
 
   it("selects a background session without an active sessions menu", async () => {
-    mocked.sessionGetMock.mockResolvedValueOnce({
+    mocked.sessionGetMock.mockResolvedValue({
       data: createSession(0),
       error: null,
     });
@@ -1067,7 +1260,7 @@ describe("bot/commands/sessions", () => {
   });
 
   it("sends the full latest assistant response after opening an assistant background notification", async () => {
-    mocked.sessionGetMock.mockResolvedValueOnce({
+    mocked.sessionGetMock.mockResolvedValue({
       data: createSession(0),
       error: null,
     });
@@ -1119,7 +1312,7 @@ describe("bot/commands/sessions", () => {
   });
 
   it("does not send preview or latest assistant response for background question notifications", async () => {
-    mocked.sessionGetMock.mockResolvedValueOnce({
+    mocked.sessionGetMock.mockResolvedValue({
       data: createSession(0),
       error: null,
     });
@@ -1132,8 +1325,157 @@ describe("bot/commands/sessions", () => {
     expect(safeBackgroundTaskMock).not.toHaveBeenCalled();
   });
 
+  it("switches to the project of the notification session when another project is selected", async () => {
+    mocked.currentProject = { id: "project-b", worktree: "/repo-b" };
+    mocked.sessionGetMock.mockResolvedValue({
+      data: { ...createSession(0), directory: "/repo-a", projectID: "project-a" },
+      error: null,
+    });
+
+    const ctx = createCallbackContext("background-session:a:session-1", 456);
+    const handled = await handleBackgroundSessionOpen(ctx, createDeps());
+
+    expect(handled).toBe(true);
+    expect(mocked.switchToProjectMock).toHaveBeenCalledWith(
+      ctx,
+      { id: "project-a", worktree: "/repo-a", name: "/repo-a" },
+      "background_session_project_switched",
+      expect.objectContaining({ ensureEventSubscription: mocked.ensureEventSubscriptionMock }),
+    );
+    expect(mocked.setCurrentSessionMock).toHaveBeenCalledWith({
+      id: "session-1",
+      title: "Session 1",
+      directory: "/repo-a",
+    });
+    expect(mocked.attachToSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: { id: "session-1", title: "Session 1", directory: "/repo-a" },
+        ensureEventSubscription: mocked.ensureEventSubscriptionMock,
+      }),
+    );
+  });
+
+  it("selects the linked worktree a notification session lives in, not the repository root", async () => {
+    mocked.currentProject = { id: "project-b", worktree: "/repo-b" };
+    mocked.sessionGetMock.mockResolvedValue({
+      data: { ...createSession(0), directory: "/repo/.worktrees/feature", projectID: "project-a" },
+      error: null,
+    });
+
+    const handled = await handleBackgroundSessionOpen(
+      createCallbackContext("background-session:q:session-1", 456),
+      createDeps(),
+    );
+
+    expect(handled).toBe(true);
+    expect(mocked.switchToProjectMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      { id: "project-a", worktree: "/repo/.worktrees/feature", name: "/repo/.worktrees/feature" },
+      "background_session_project_switched",
+      expect.objectContaining({}),
+    );
+    expect(mocked.attachToSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: expect.objectContaining({ directory: "/repo/.worktrees/feature" }),
+      }),
+    );
+  });
+
+  it("keeps the project when the notification session belongs to the selected one", async () => {
+    mocked.sessionGetMock.mockResolvedValue({ data: createSession(0), error: null });
+
+    const handled = await handleBackgroundSessionOpen(
+      createCallbackContext("background-session:a:session-1", 456),
+      createDeps(),
+    );
+
+    expect(handled).toBe(true);
+    expect(mocked.switchToProjectMock).not.toHaveBeenCalled();
+    expect(mocked.setCurrentSessionMock).toHaveBeenCalledWith({
+      id: "session-1",
+      title: "Session 1",
+      directory: "/repo",
+    });
+  });
+
+  it("leaves the project and the session alone when the notification session cannot be read", async () => {
+    mocked.currentProject = { id: "project-b", worktree: "/repo-b" };
+    mocked.currentSession = { id: "session-b", title: "Session B", directory: "/repo-b" };
+    mocked.sessionGetMock.mockResolvedValue({ data: null, error: new Error("not found") });
+
+    const ctx = createCallbackContext("background-session:a:session-1", 456);
+    const handled = await handleBackgroundSessionOpen(ctx, createDeps());
+
+    expect(handled).toBe(true);
+    expect(mocked.switchToProjectMock).not.toHaveBeenCalled();
+    expect(mocked.setCurrentSessionMock).not.toHaveBeenCalled();
+    expect(ctx.editMessageReplyMarkup).not.toHaveBeenCalled();
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({
+      text: t("sessions.select_error"),
+      show_alert: true,
+    });
+  });
+
+  it("restores the previous project, session and settings when the open fails after switching", async () => {
+    mocked.currentProject = { id: "project-b", worktree: "/repo-b" };
+    mocked.currentSession = { id: "session-b", title: "Session B", directory: "/repo-b" };
+    mocked.sessionGetMock.mockResolvedValue({
+      data: { ...createSession(0), directory: "/repo-a", projectID: "project-a" },
+      error: null,
+    });
+    mocked.attachToSessionMock.mockRejectedValueOnce(new Error("follow failed"));
+    const restoreTracker = vi.spyOn(container.backgroundSessionTracker, "restore");
+
+    const ctx = createCallbackContext("background-session:a:session-1", 456);
+    const handled = await handleBackgroundSessionOpen(ctx, createDeps());
+
+    expect(handled).toBe(true);
+    expect(mocked.switchToProjectMock.mock.calls[1]?.[1]).toEqual({
+      id: "project-b",
+      worktree: "/repo-b",
+    });
+    expect(mocked.selectAgentMock).toHaveBeenCalledWith("build");
+    expect(mocked.selectModelMock).toHaveBeenCalledWith({
+      providerID: "opencode-go",
+      modelID: "deepseek-v4-flash",
+      variant: "default",
+    });
+    expect(restoreTracker).toHaveBeenCalledOnce();
+    expect(mocked.setCurrentSessionMock).toHaveBeenLastCalledWith({
+      id: "session-b",
+      title: "Session B",
+      directory: "/repo-b",
+    });
+    expect(mocked.attachToSessionMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        session: { id: "session-b", title: "Session B", directory: "/repo-b" },
+      }),
+    );
+    expect(ctx.editMessageReplyMarkup).not.toHaveBeenCalled();
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({
+      text: t("sessions.select_error"),
+      show_alert: true,
+    });
+  });
+
+  it("keeps the select-project-first hint when no project is selected", async () => {
+    mocked.currentProject = null;
+
+    const ctx = createCallbackContext("background-session:a:session-1", 456);
+    const handled = await handleBackgroundSessionOpen(ctx, createDeps());
+
+    expect(handled).toBe(true);
+    expect(mocked.sessionGetMock).not.toHaveBeenCalled();
+    expect(mocked.switchToProjectMock).not.toHaveBeenCalled();
+    expect(mocked.setCurrentSessionMock).not.toHaveBeenCalled();
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({
+      text: t("sessions.select_project_first"),
+      show_alert: true,
+    });
+  });
+
   it("keeps background session button usable when another inline menu is active", async () => {
-    mocked.sessionGetMock.mockResolvedValueOnce({
+    mocked.sessionGetMock.mockResolvedValue({
       data: createSession(0),
       error: null,
     });
@@ -1163,7 +1505,7 @@ describe("bot/commands/sessions", () => {
   });
 
   it("keeps successful background selection when removing the button fails", async () => {
-    mocked.sessionGetMock.mockResolvedValueOnce({
+    mocked.sessionGetMock.mockResolvedValue({
       data: createSession(0),
       error: null,
     });

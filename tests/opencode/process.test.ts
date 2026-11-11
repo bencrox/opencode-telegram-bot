@@ -1,16 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
 import {
+  clearStandServerPid,
   createOpencodeServeSpawnCommand,
   findUnixListeningPidInSs,
   findWindowsListeningPidInNetstat,
   getOpencodeApiVersion,
   parseOpencodeVersionOutput,
   readNpmShimTarget,
+  recordStandServerPid,
   resolvePosixOpencodeExecutable,
 } from "../../src/opencode/process.js";
 
@@ -27,9 +29,9 @@ const V2_NPM_SHIM = [
   "",
 ].join("\r\n");
 
-function withTempOpencodeEnv(run: (paths: { pathDir: string; homeExe: string }) => void): void {
-  const originalPath = process.env.PATH;
-  const originalHome = process.env.HOME;
+function withTempOpencodeEnv(
+  run: (paths: { pathDir: string; homeExe: string; homeDir: string; tempRoot: string }) => void,
+): void {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-telegram-bot-"));
   const pathDir = path.join(tempRoot, "path-bin");
   const homeDir = path.join(tempRoot, "home");
@@ -38,12 +40,12 @@ function withTempOpencodeEnv(run: (paths: { pathDir: string; homeExe: string }) 
   try {
     fs.mkdirSync(pathDir, { recursive: true });
     fs.mkdirSync(path.dirname(homeExe), { recursive: true });
-    process.env.PATH = pathDir;
-    process.env.HOME = homeDir;
-    run({ pathDir, homeExe });
+    vi.stubEnv("PATH", pathDir);
+    vi.stubEnv("HOME", homeDir);
+    vi.stubEnv("OPENCODE_BIN_PATH", "");
+    run({ pathDir, homeExe, homeDir, tempRoot });
   } finally {
-    process.env.PATH = originalPath;
-    process.env.HOME = originalHome;
+    vi.unstubAllEnvs();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
@@ -68,9 +70,9 @@ describe("opencode/process", () => {
   });
 
   it("builds opencode serve command with the configured local port", () => {
-    const command = createOpencodeServeSpawnCommand({ host: "localhost", port: 4987 }, "v1");
-
     if (process.platform === "win32") {
+      const command = createOpencodeServeSpawnCommand({ host: "localhost", port: 4987 }, "v1");
+
       expect(command.windowsHide).toBe(true);
 
       // If we claim to spawn opencode.exe directly, it must be a real absolute path.
@@ -86,48 +88,141 @@ describe("opencode/process", () => {
       return;
     }
 
-    expect(command.args).toEqual(["serve", "--port", "4987"]);
-    expect(command.windowsHide).toBe(false);
-    expect(command.command.endsWith("opencode")).toBe(true);
-  });
-
-  it("resolves opencode from PATH before the installer fallback", () => {
-    if (process.platform === "win32") {
-      return;
-    }
-
-    withTempOpencodeEnv(({ pathDir, homeExe }) => {
+    withTempOpencodeEnv(({ pathDir }) => {
       fs.writeFileSync(path.join(pathDir, "opencode"), "#!/bin/sh\n", { mode: 0o755 });
-      fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
 
-      expect(resolvePosixOpencodeExecutable()).toBe("opencode");
+      const command = createOpencodeServeSpawnCommand({ host: "localhost", port: 4987 }, "v1");
+
+      expect(command).toEqual({
+        command: "opencode",
+        args: ["serve", "--port", "4987"],
+        windowsHide: false,
+      });
     });
   });
 
-  it("falls back to the OpenCode installer directory when PATH has no opencode", () => {
-    if (process.platform === "win32") {
-      return;
-    }
+  it.skipIf(process.platform === "win32")(
+    "resolves opencode from PATH before the installer fallback",
+    () => {
+      withTempOpencodeEnv(({ pathDir, homeExe }) => {
+        fs.writeFileSync(path.join(pathDir, "opencode"), "#!/bin/sh\n", { mode: 0o755 });
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
 
-    withTempOpencodeEnv(({ homeExe }) => {
-      fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
+        expect(resolvePosixOpencodeExecutable()).toBe("opencode");
+      });
+    },
+  );
 
-      expect(resolvePosixOpencodeExecutable()).toBe(homeExe);
-    });
-  });
+  it.skipIf(process.platform === "win32")(
+    "falls back to the OpenCode installer directory when PATH has no opencode",
+    () => {
+      withTempOpencodeEnv(({ homeExe }) => {
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
 
-  it("skips a non-executable opencode file on PATH and uses the installer fallback", () => {
-    if (process.platform === "win32") {
-      return;
-    }
+        expect(resolvePosixOpencodeExecutable()).toBe(homeExe);
+      });
+    },
+  );
 
-    withTempOpencodeEnv(({ pathDir, homeExe }) => {
-      fs.writeFileSync(path.join(pathDir, "opencode"), "not executable\n", { mode: 0o644 });
-      fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
+  it.skipIf(process.platform === "win32")(
+    "skips a non-executable opencode file on PATH and uses the installer fallback",
+    () => {
+      withTempOpencodeEnv(({ pathDir, homeExe }) => {
+        fs.writeFileSync(path.join(pathDir, "opencode"), "not executable\n", { mode: 0o644 });
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
 
-      expect(resolvePosixOpencodeExecutable()).toBe(homeExe);
-    });
-  });
+        expect(resolvePosixOpencodeExecutable()).toBe(homeExe);
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "uses OPENCODE_BIN_PATH before PATH and the installer fallback",
+    () => {
+      withTempOpencodeEnv(({ pathDir, homeExe, tempRoot }) => {
+        const customExe = path.join(tempRoot, "custom", "opencode");
+        fs.mkdirSync(path.dirname(customExe), { recursive: true });
+        fs.writeFileSync(customExe, "#!/bin/sh\n", { mode: 0o755 });
+        fs.writeFileSync(path.join(pathDir, "opencode"), "#!/bin/sh\n", { mode: 0o755 });
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
+        vi.stubEnv("OPENCODE_BIN_PATH", customExe);
+
+        expect(resolvePosixOpencodeExecutable()).toBe(customExe);
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "ignores a non-executable OPENCODE_BIN_PATH and searches the usual places",
+    () => {
+      withTempOpencodeEnv(({ homeExe, tempRoot }) => {
+        const brokenExe = path.join(tempRoot, "custom", "opencode");
+        fs.mkdirSync(path.dirname(brokenExe), { recursive: true });
+        fs.writeFileSync(brokenExe, "not executable\n", { mode: 0o644 });
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
+        vi.stubEnv("OPENCODE_BIN_PATH", brokenExe);
+
+        expect(resolvePosixOpencodeExecutable()).toBe(homeExe);
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "ignores a relative OPENCODE_BIN_PATH so spawn cannot pick another executable",
+    () => {
+      withTempOpencodeEnv(({ homeExe }) => {
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
+        const relativeExe = path.relative(process.cwd(), process.execPath);
+        vi.stubEnv("OPENCODE_BIN_PATH", relativeExe);
+
+        expect(resolvePosixOpencodeExecutable()).toBe(homeExe);
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "finds opencode in the package managers' global bin directories",
+    () => {
+      const packageManagerDirs = [
+        path.join(".bun", "bin"),
+        path.join(".local", "share", "pnpm"),
+        path.join("Library", "pnpm"),
+        path.join(".yarn", "bin"),
+        path.join(".config", "yarn", "global", "bin"),
+      ];
+
+      withTempOpencodeEnv(({ homeDir }) => {
+        for (const relativeDir of packageManagerDirs) {
+          const candidate = path.join(homeDir, relativeDir, "opencode");
+          fs.mkdirSync(path.dirname(candidate), { recursive: true });
+          fs.writeFileSync(candidate, "#!/bin/sh\n", { mode: 0o755 });
+
+          try {
+            expect(resolvePosixOpencodeExecutable()).toBe(candidate);
+          } finally {
+            fs.rmSync(candidate);
+          }
+        }
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "builds the serve command from the installer fallback when PATH has no opencode",
+    () => {
+      withTempOpencodeEnv(({ homeExe }) => {
+        fs.writeFileSync(homeExe, "#!/bin/sh\n", { mode: 0o755 });
+
+        const command = createOpencodeServeSpawnCommand({ host: "localhost", port: 4987 }, "v1");
+
+        expect(command).toEqual({
+          command: homeExe,
+          args: ["serve", "--port", "4987"],
+          windowsHide: false,
+        });
+      });
+    },
+  );
 
   it("falls back to cmd.exe on Windows when opencode.exe cannot be resolved", () => {
     if (process.platform !== "win32") {
@@ -209,10 +304,25 @@ describe("opencode/process", () => {
     }
   });
 
-  it("starts the registered background server for OpenCode V2", () => {
-    const command = createOpencodeServeSpawnCommand({ host: "127.0.0.1", port: 4097 }, "v2");
+  it("starts the registered background server for OpenCode V2 service mode", () => {
+    const command = createOpencodeServeSpawnCommand(
+      { host: "127.0.0.1", port: 4097 },
+      "v2",
+      "service",
+    );
 
     expect(command.args.slice(-4)).toEqual(["serve", "--service", "--port", "4097"]);
+  });
+
+  it("starts a plain server for OpenCode V2 standalone mode", () => {
+    const command = createOpencodeServeSpawnCommand(
+      { host: "127.0.0.1", port: 4097 },
+      "v2",
+      "standalone",
+    );
+
+    expect(command.args.slice(-3)).toEqual(["serve", "--port", "4097"]);
+    expect(command.args).not.toContain("--service");
   });
 
   it("reads the exe an npm shim runs", () => {
@@ -268,5 +378,30 @@ describe("opencode/process", () => {
     expect(getOpencodeApiVersion("2.0.16")).toBe("v2");
     expect(getOpencodeApiVersion("1.18.32")).toBe("v1");
     expect(getOpencodeApiVersion("0.15.0")).toBe("v1");
+  });
+
+  it("records and clears only the stand server pid the launcher asked for", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-telegram-bot-"));
+    const pidFile = path.join(tempRoot, "opencode-server.pid");
+    const previous = process.env.OPENCODE_STAND_PID_FILE;
+
+    try {
+      process.env.OPENCODE_STAND_PID_FILE = pidFile;
+      recordStandServerPid(4242);
+      expect(fs.readFileSync(pidFile, "utf8").trim()).toBe("4242");
+
+      clearStandServerPid(111);
+      expect(fs.existsSync(pidFile)).toBe(true);
+
+      clearStandServerPid(4242);
+      expect(fs.existsSync(pidFile)).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCODE_STAND_PID_FILE;
+      } else {
+        process.env.OPENCODE_STAND_PID_FILE = previous;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -3,8 +3,9 @@ import { opencodeClient } from "../../opencode/client.js";
 import { getCurrentSession } from "../stores/settings-store.js";
 import { logger } from "../../utils/logger.js";
 import { checkFolderPresence, collectFromPresentFolders } from "./folder-presence-service.js";
+import { loadUnreadReplySessionIds } from "./session-reply-read-service.js";
 
-export type RecentStatus = "question" | "permission" | "running" | "idle";
+export type RecentStatus = "question" | "permission" | "running" | "unread" | "idle";
 type RecentSessionInfo = Pick<GlobalSession, "id" | "directory" | "title" | "time">;
 export type RecentSession = { session: RecentSessionInfo; status: RecentStatus };
 
@@ -32,7 +33,8 @@ export async function resolveSessionParentChain(
   return roots.has(id) ? { root: id, links } : null;
 }
 
-export async function loadRecentSessions(limit: number): Promise<RecentSession[]> {
+/** The sessions /recent lists at this moment, newest first, without their statuses. */
+async function loadRecentSessionInfos(limit: number): Promise<RecentSessionInfo[]> {
   // Sessions whose folder is gone are left out and do not take places within the limit.
   const sessions: RecentSessionInfo[] = (
     await collectFromPresentFolders(loadGlobalSessions, (session) => session.directory, limit)
@@ -48,6 +50,17 @@ export async function loadRecentSessions(limit: number): Promise<RecentSession[]
     }
   }
   sessions.sort((a, b) => b.time.updated - a.time.updated);
+  return sessions;
+}
+
+/** The folders /recent lists at this moment, for callers that only need its project names. */
+export async function loadRecentSessionDirectories(limit: number): Promise<string[]> {
+  const sessions = await loadRecentSessionInfos(limit);
+  return [...new Set(sessions.map((session) => session.directory))];
+}
+
+export async function loadRecentSessions(limit: number): Promise<RecentSession[]> {
+  const sessions = await loadRecentSessionInfos(limit);
   const byDirectory = new Map<string, RecentSessionInfo[]>();
   for (const session of sessions) {
     const group = byDirectory.get(session.directory) ?? [];
@@ -56,6 +69,10 @@ export async function loadRecentSessions(limit: number): Promise<RecentSession[]
   }
 
   const statuses = new Map<string, RecentStatus>();
+  // Reply checks run alongside the per-folder lookups: one round trip either way.
+  const unreadPass = loadUnreadReplySessionIds(
+    sessions.map((session) => ({ id: session.id, directory: session.directory })),
+  );
   await Promise.all([...byDirectory].map(async ([directory, group]) => {
     const [statusResult, questionResult, permissionResult] = await Promise.all([
       opencodeClient.session.status({ directory }),
@@ -90,5 +107,13 @@ export async function loadRecentSessions(limit: number): Promise<RecentSession[]
           : run === "busy" || run === "retry" ? "running" : "idle");
     }
   }));
+  // A session that is busy, waiting on an answer or a permission keeps its own symbol; the unread
+  // mark only takes the place of ordinary idle.
+  const unread = await unreadPass;
+  for (const sessionId of unread) {
+    if (statuses.get(sessionId) === "idle") {
+      statuses.set(sessionId, "unread");
+    }
+  }
   return sessions.map((session) => ({ session, status: statuses.get(session.id) ?? "idle" }));
 }

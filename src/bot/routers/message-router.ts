@@ -4,10 +4,13 @@ import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
 import { handleTaskTextInput } from "../commands/task-command.js";
+import { handleGoalButton, handleGoalTextInput } from "../commands/goal-command.js";
 import {
   handleModelSearchTextInput,
 } from "../callbacks/model-selection-callback-handler.js";
 import { handleQuestionTextAnswer } from "../callbacks/question-callback-handler.js";
+import { handleProjectSearchTextInput } from "../callbacks/project-callback-handler.js";
+import { handleSessionSearchTextInput } from "../callbacks/session-callback-handler.js";
 import { handleRenameTextAnswer } from "../callbacks/rename-callback-handler.js";
 import { handleContextButtonPress } from "../menus/context-control-menu.js";
 import { showAgentSelectionMenu } from "../menus/agent-selection-menu.js";
@@ -16,6 +19,7 @@ import { showVariantSelectionMenu } from "../menus/variant-selection-menu.js";
 import {
   AGENT_MODE_BUTTON_TEXT_PATTERN,
   CONTEXT_BUTTON_TEXT_PATTERN,
+  GOAL_BUTTON_TEXT_PATTERN,
   MODEL_BUTTON_TEXT_PATTERN,
   QUEUED_PROMPT_BUTTON_TEXT_PATTERN,
   VARIANT_BUTTON_TEXT_PATTERN,
@@ -57,6 +61,11 @@ async function blockMenuWhileInteractionActive(
 export function registerMessageRouter(bot: Bot<Context>, deps: MessageRouterDeps): void {
   const { container } = deps;
   bot.on("message:text", unknownCommandMiddleware);
+
+  bot.hears(GOAL_BUTTON_TEXT_PATTERN, async (ctx) => {
+    if (await blockMenuWhileInteractionActive(ctx, container.interactionManager)) return;
+    await handleGoalButton(ctx, container);
+  });
 
   bot.hears(QUEUED_PROMPT_BUTTON_TEXT_PATTERN, async (ctx) => {
     logger.debug(`[Bot] Queued prompt button pressed: ${ctx.message?.text}`);
@@ -215,6 +224,8 @@ export function registerMessageRouter(bot: Bot<Context>, deps: MessageRouterDeps
       return;
     }
 
+    if (await handleGoalTextInput(ctx, container)) return;
+
     const handledTask = await handleTaskTextInput(ctx, container);
     if (handledTask) {
       return;
@@ -222,6 +233,14 @@ export function registerMessageRouter(bot: Bot<Context>, deps: MessageRouterDeps
 
     const handledModelSearchText = await handleModelSearchTextInput(ctx, container);
     if (handledModelSearchText) {
+      return;
+    }
+
+    if (await handleProjectSearchTextInput(ctx, container)) {
+      return;
+    }
+
+    if (await handleSessionSearchTextInput(ctx, container)) {
       return;
     }
 

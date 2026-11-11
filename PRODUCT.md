@@ -31,8 +31,8 @@ No public inbound ports are required for normal usage.
 
 - Works with OpenCode V1 and OpenCode V2 servers; the API version is set in configuration (`OPENCODE_SERVER_VERSION`, default V1) and a server of the other version is reported in the log
 - Check OpenCode server status (running / not running)
-- Start OpenCode server from the app: `opencode serve` on V1, the registered background server (`opencode serve --service`) on V2; no start while the configured address answers with the wrong password or as the other version, or while the local `opencode` executable is the other version — the reason goes to the log
-- On V2, when the configured address does not answer and OpenCode's registered V2 server runs on another port, `/opencode_start` and auto-restart connect the bot to that server instead of starting one; the connection lasts until the bot restarts, and `/opencode_stop` then stops that server
+- Start OpenCode server from the app: `opencode serve` on V1, and on V2 either the registered background server (`opencode serve --service`, the default) or a separate server without `--service` when `OPENCODE_SERVER_MODE=standalone`; no start while the configured address answers with the wrong password or as the other version, or while the local `opencode` executable is the other version — the reason goes to the log. Standalone requires an explicit `OPENCODE_API_URL` and does not follow a registered server on another port
+- On V2 service mode, when the configured address does not answer and OpenCode's registered V2 server runs on another port, `/opencode_start` and auto-restart connect the bot to that server instead of starting one; the connection lasts until the bot restarts, and `/opencode_stop` then stops that server. Standalone never does this
 - Stop OpenCode server from the app
 - Optionally monitor and auto-restart a local OpenCode server, with the same start rules
 
@@ -40,13 +40,15 @@ No public inbound ports are required for normal usage.
 
 - Fetch available projects from OpenCode API (name + path)
 - Select and switch projects
+- Search the `/projects` list by project name, with paginated results and the current-project marker
 - Persist selected project between restarts (`settings.json`)
 
 ### Session management
 
 - Fetch last N sessions (name + date)
+- Search the current project's root sessions by title or ID in `/sessions`, with paginated results and the attached-session marker
 - Select an existing session, show the last user input as a quote and the last assistant reply in full (plus the newest input still waiting for its reply), then follow its live updates
-- Browse up to `SESSIONS_LIST_LIMIT` recent root sessions across projects and git worktrees with running, idle, question and permission status (a question or permission request a subagent is waiting on counts for its root session); select one to switch project and follow it, including after detach
+- Browse up to `SESSIONS_LIST_LIMIT` recent root sessions across projects and git worktrees with running, idle, unread reply, question and permission status (a question or permission request a subagent is waiting on counts for its root session); each session carries one leading symbol, and the unread-reply bell takes the place of ordinary idle only, stays recorded while the session is busy, survives restarts and checks replies against OpenCode so answers that arrived while the bot was offline count; select one to switch project and follow it, including after detach, and the bell clears once that session's latest reply has been sent to the chat
 - Switching to an existing session adopts the agent, model, and variant it last ran with
 - Create a new session
 - Use OpenCode-generated session title (based on conversation); a session OpenCode has not named yet is shown as "new session" wherever the bot names a session, and `/status`, `/rename` and `/detach` name the current session with the title OpenCode has for it at that moment
@@ -77,14 +79,14 @@ No public inbound ports are required for normal usage.
 ### Result delivery
 
 - Send each completed assistant response after completion signal from SSE
-- When the assistant footer is on, every answered turn of the followed session ends with its own footer — including a turn OpenCode starts by itself after a background command or subagent ends (V2) and a prompt typed in an attached OpenCode TUI or Desktop — with that turn's agent and model and the time from its own start; a turn that is aborted, errors, or is stopped from an attached client gets none
+- When the assistant footer is on, every answered turn of the followed session ends with its own footer — including a turn OpenCode starts by itself after a background command or subagent ends (V2) and a prompt typed in an attached OpenCode TUI or Desktop — with that turn's agent and model and the time from its own start; on V2 the footer also shows that run's speed when every step has a stream time, as `42.3 tok/s`. A turn that is aborted or errors gets none. A turn stopped from an attached client gets the footer only when the reply had already landed, and that footer then names the interruption. A rejected permission, a cancelled poll, a server restart and `/opencode_stop` still get none. A scheduled-task success carries the same speed and no interruption mark; an errored task still has no footer
 - OpenCode V2 resumes a run interrupted by a server restart (`/opencode_stop` then `/opencode_start`, a restart outside the bot, a crash and auto-restart); the chat ends the interrupted turn — its tool lines, cards and compact progress end, background ones included, no footer — and shows the resumed run as a turn OpenCode started by itself, with its own prompts, reply and footer, timed from when the bot saw it again
 - In draft streaming mode, assistant text written before a question or permission prompt is sent as a message above that prompt when it appears, and is not sent again when the reply completes
 - If that send fails, the reply is not sent again; when Telegram accepts sends again, the chat gets a notice that the last assistant reply was not delivered
 - In edit streaming mode the chat reads in the order things happened: a reply the agent wrote before its next tool call, thinking, subagent, document, question or permission prompt sits above it, and the next tool opens a new message (in compact mode, a new progress message) below the reply
 - After a mid-session Telegram outage, the next new message is answered without restarting the app
 - Compact output mode shows thinking and writing on one progress message per stretch of work between replies and prompts, from the start of that stretch, and a tool call takes it only once its arguments are known; a subagent the main agent launches shows there as `🤖 Running Task: <task>`, named as on a subagent card; when the reply or prompt lands, or when the run ends if nothing followed, the message is removed, or turns into one line of what that stretch did — `✅ commands: 3, edits: 1, reads: 4, tools: 2, changed files: 2`, zero counts left out, failed calls included — and is removed when there is nothing to count. A message whose stretch started a background operation (OpenCode V2) stays working on that operation with its timer past the reply, prompt or end of the run, and is removed or turned into its own count line when its last background operation ends — also after `/abort` when OpenCode keeps that operation running; the turn OpenCode starts by itself afterwards gets its own progress message, as any turn does
-- In full mode, show every foreground tool operation as soon as its arguments are known, already whole — never as the bare tool name while the agent is still composing the call — without a timer until 20 seconds; edit its line in place as it runs and finishes, keeping parallel operations in start order. A finished call lasting at least 20 seconds shows its total duration. Subagent (`task`) operations use their cards instead of tool lines; a tool delivered as a document loses its running text line when the document arrives. A file-changing tool (`edit`, `write`, `apply_patch`) names each file it changed on its own line with `(+N -M)`, never the patch text, on both OpenCode versions; with diff-file attachments on, each file arrives as its own document captioned with its line, and a file whose diff is over the size limit keeps its text line. A background command or subagent (OpenCode V2) keeps its running line or card, with its timer, after the turn ends and gets its finished line or `✅ Completed` with the total duration when the operation itself ends; after a session switch, `/start` or a lost event stream it stays as it was. After `/abort`, or a stop from an attached OpenCode TUI or Desktop, a background command line or subagent card OpenCode keeps running stays live, with its timer, and ends with what the operation really ended with. A run interrupted by `/abort`, an attached OpenCode TUI or Desktop, or the server leaves its running foreground lines without the `⏳`, text kept, on both OpenCode versions. A foreground line whose call ended while the event stream was down also stays as it was; the bot never shows a tool it did not see start. A `bash` command or `execute` code (OpenCode V2 Code Mode) longer than `BASH_TOOL_DISPLAY_MAX_LENGTH` shows cut to that length, ending in `...`, on tool lines, subagent cards and compact lines alike
+- In full mode, show every foreground tool operation as soon as its arguments are known, already whole — never as the bare tool name while the agent is still composing the call — without a timer until 20 seconds; edit its line in place as it runs and finishes, keeping parallel operations in start order. A finished call lasting at least 20 seconds shows its total duration. Subagent (`task`) operations use their cards instead of tool lines; a tool delivered as a document loses its running text line when the document arrives. A `todowrite` call shows its checklist in a message of its own at the bottom of the chat and keeps that message updated while the call runs, with the same running mark, timer and finished duration as any tool line; when a later call delivers its snapshot, the previous message becomes exactly one collapsed `📝 todowrite (done/total)` line, a bot restart, `/start` or a session/project switch does not forget it, and only the next snapshot in the same chat collapses it. A file-changing tool (`edit`, `write`, `apply_patch`) names each file it changed on its own line with `(+N -M)`, never the patch text, on both OpenCode versions; with diff-file attachments on, each file arrives as its own document captioned with its line, and a file whose diff is over the size limit keeps its text line. A background command or subagent (OpenCode V2) keeps its running line or card, with its timer, after the turn ends and gets its finished line or `✅ Completed` with the total duration when the operation itself ends; after a session switch, `/start` or a lost event stream it stays as it was. After `/abort`, or a stop from an attached OpenCode TUI or Desktop, a background command line or subagent card OpenCode keeps running stays live, with its timer, and ends with what the operation really ended with. A run interrupted by `/abort`, an attached OpenCode TUI or Desktop, or the server leaves its running foreground lines without the `⏳`, text kept, on both OpenCode versions. A foreground line whose call ended while the event stream was down also stays as it was; the bot never shows a tool it did not see start. A `bash` command or `execute` code (OpenCode V2 Code Mode) longer than `BASH_TOOL_DISPLAY_MAX_LENGTH` shows cut to that length, ending in `...`, on tool lines, subagent cards and compact lines alike
 - Show elapsed time for tool calls running longer than 20 seconds, updated on a timer so it keeps counting while a tool blocks without producing output; covers subagent cards and compact mode, and the total duration stays on the finished tool line. In compact mode, while several tools of one step are in flight, the progress line shows the still-running one (the most recently started if several), with that tool's timer — not a finished sibling. A finished subagent card keeps the time its whole run took. Durations use the same `· 🕒 1h 2m 3s` format as the assistant run footer
 - Messages the bot composes itself — tool lines, compact progress, subagent cards, background operation lines, permission and question prompts, the dashboard, command replies, menus and notices — carry no link preview on their first send or any edit, and their URLs stay clickable; the agent's reply, thinking and a scheduled task's reply keep Telegram's link preview
 - A subagent card shows Task, Agent, and Model after a one-line `🧩 Starting task: <task>` state (`🧩 Starting task...` while the task is not known yet) that lasts until all three are known, never `Unknown` or an empty label; a subagent that ends while its card is starting gets its final line with the lines known by then. Parallel cards each carry their own subagent's Task and Agent. When OpenCode sends a variant, the Model line is `provider/id (variant)`. A card ends once, in place of its activity line: `✅ Completed · 🕒 <duration>` when the subagent finishes, `❌ <error>` when it fails, and `⏹ Interrupted · 🕒 <duration>` on both OpenCode versions when it is interrupted — by `/abort` (every running foreground card, right after its success reply), an attached OpenCode TUI or Desktop, or the server (a V2 restart ends running cards, background ones included, at the moment the bot sees it; a subagent OpenCode resumes gets a new card). A background card is not ended by `/abort` or an attached client's stop: it shows `⏹ Interrupted` only when OpenCode reports its subagent interrupted, and a card waiting on a background launch shows it once that launch ends. A subagent launched by another subagent gets no card of its own, at any depth: its parent's card shows `🤖 Running Task: <task>` on its activity line while it runs — the task named by the launch's description, never its prompt, and the bare `🤖 Running Task` when the launch carries no description — with the usual timer, and its questions and permission requests still appear in the chat; when the launch was in the background (OpenCode V2), the parent's card keeps that line until it ends, even past the turn and past the parent's own end, and only then shows its own final line
@@ -98,7 +100,7 @@ No public inbound ports are required for normal usage.
 ### Session status in chat
 
 - Keep a pinned status message in the chat; it can be turned off in `/settings` (default on)
-- Show session title, project, model, context usage, and changed files; when a variant is set, the model line is `provider/id (variant)`
+- Show session title, project, model, context usage, and changed files; when a variant is set, the model line is `provider/id (variant)`. The changed-file list and its counts are OpenCode's session diff, live and after a switch or restart, not a sum of each edit; an empty diff removes the list, and a failed refresh keeps the last one
 - On a session switch, a bot restart or `/rename`, the dashboard appears with the session's real context, cost and changed files, never a placeholder zero; turning it on in `/settings` sends it at once and corrects it once the values load
 - Picking a model, selecting an agent that applies its own model, or re-selecting the session on the dashboard when it brings another model edits the dashboard at once, mid-run too, to that model and its context limit; a limit the catalog does not list yet shows the default and is corrected once it does
 - Auto-update status from SSE and tool events
@@ -124,7 +126,7 @@ No public inbound ports are required for normal usage.
 - Configurable scheduled task limit (default: 10)
 - Configurable bot locale
 - Configurable visibility for thinking content and diff-file attachments
-- Configurable compact output, assistant footer, pinned session dashboard, message queue, and TTS modes (`/settings`)
+- Configurable compact output, assistant footer, pinned session dashboard, notifications from other sessions, message queue, and TTS modes (`/settings`)
 - Configurable opt-in display of full thinking/reasoning content
 - Configurable max code file size in KB (default: 100)
 - Optional STT settings for voice transcription (`STT_API_URL`, `STT_API_KEY`, `STT_MODEL`, `STT_LANGUAGE`)
@@ -140,22 +142,23 @@ Current command set:
 
 - `/status` - bot version, server, project, and session status
 - `/new` - create a new session
-- `/abort` - stop the current task; background operations OpenCode keeps running stay followed, and the success reply then says how many keep running in place of "No more messages from this run will be sent": each background command and each subagent card still running counts once, a nested launch inside its card, the same number in compact and full mode
+- `/abort` - stop the current task and, on OpenCode V2, pause an active session goal even between turns; the reply names the pause only when one happened or the pause itself failed, and never calls a failed pause a success. Background operations OpenCode keeps running stay followed, and the success reply then says how many keep running in place of "No more messages from this run will be sent": each background command and each subagent card still running counts once, a nested launch inside its card, the same number in compact and full mode
 - `/detach` - detach the bot from the current session without stopping it; messages waiting for its running task stay with it and reach it as if the bot had stayed attached (no buttons, withdrawn only by `/abort` there or `/opencode_stop`); a later command or prompt HTTP failure for that session is not posted to chat unless the bot has re-attached to it
-- `/sessions` - show and switch recent sessions
-- `/recent` - show recent sessions across projects and worktrees with their status and switch directly to one
+- `/sessions` - browse, search and switch sessions in the current project
+- `/recent` - show recent sessions across projects and worktrees with their status, including a bell for a reply the chat has not shown yet, and switch directly to one
 - `/messages` - browse user messages in the current session
 - `/projects` - show and switch projects
 - `/worktree` - show and switch existing git worktrees for the current repository
 - `/settings` - change bot settings
 - `/task` - create a scheduled task
-- `/tasklist` - browse and delete scheduled tasks
+- `/tasklist` - browse and delete scheduled tasks, and enable or disable individual recurring tasks
 - `/rename` - rename current session
-- `/commands` - browse and run custom commands (plus built-ins like `init` and `review`)
+- `/commands` - browse and run custom commands (plus built-ins like `init` and `review`); the server command `goal` is omitted
 - `/skills` - browse and run OpenCode skills
 - `/opencode_start` - start local OpenCode server
 - `/opencode_stop` - stop local OpenCode server; available during an active request and kills the local process even if health is hung
 - `/reload` - V2 only: reload the OpenCode configuration (config, plugins, providers and models, agents, commands, skills, MCP) for every loaded project without restarting the server; available during an active request, blocked while an interaction is on screen; the model menu reflects the reloaded providers at once
+- `/goal` - V2 only: with no goal, ask for its objective in the next text message and confirm start with a warning about automatic continuation and uncapped token use; with an existing goal, show its details. No command arguments or goal replacement: pause and delete the old goal before creating another. The bottom keyboard shows the short objective and a direct Pause, Continue (with confirmation), or Delete when complete, below queued messages and above the fixed grid. Details of a paused goal offer inline Delete. Details and Pause work during a run; creation, Continue and Delete require idle. All goal controls are blocked during another interaction. Pause stops future continuations without interrupting the current turn; `/abort` pauses and interrupts. The command menu and `/help` list it; `/commands` does not. Typed on V1 it is an unknown command
 - `/help` - show command help
 - `/ls` - interactive file browser for the current project directory; a text file can be attached to the next prompt from its detail view
 
@@ -167,10 +170,12 @@ Text messages (non-commands) are treated as prompts for OpenCode only when no bl
 
 Interaction routing rules:
 
+- Bottom goal controls target the current selected session's only goal and show no ID or token; confirmations and inline Delete stay bound to the goal shown when they opened
+- Confirmed goal start and Continue use the currently selected project agent, model and variant, as normal prompts do; Pause and Delete do not change the session's selection
 - Only one interactive flow can be active at a time (inline menu, permission, question, rename, commands, skills, messages)
 - Agent questions and permission requests are shown one after another: one arriving while another holds the slot waits, and waiting requests appear in the order they arrived; a new question from the session whose poll is on screen replaces it, one from another session (a parallel subagent) waits; `/abort`, `/detach` and `/opencode_stop` drop everything waiting
 - While an interaction is active, unrelated input is blocked with a contextual hint
-- Allowed utility commands during active interactions: `/help`, `/status`, `/abort`, `/detach`, `/opencode_stop`
+- Allowed utility commands during active interactions: `/help`, `/status`, `/abort`, `/detach`, `/opencode_stop`; idle model, project and session searches block them
 - Unknown slash commands return an explicit fallback message
 - Interaction flows do not expire automatically and wait for explicit completion (`answer`, `cancel`, `/abort`, `/detach`, reset/cleanup)
 
@@ -206,23 +211,24 @@ Agent picker behavior:
 - [x] Single-user access control by allowed Telegram user ID
 - [x] OpenCode server control from Telegram (`/status`, `/opencode_start`, `/opencode_stop`)
 - [x] OpenCode V1 and V2 servers, selected by `OPENCODE_SERVER_VERSION`; pending questions and permissions come back after the event stream reconnects
-- [x] OpenCode V2 set up and started out of the box: the setup wizard asks for the version and the V2 password, and `/opencode_start`, `/opencode_stop` and auto-restart manage the V2 background server
+- [x] OpenCode V2 set up and started out of the box: the setup wizard asks for the version and the V2 password, and `/opencode_start`, `/opencode_stop` and auto-restart manage the V2 background server unless `OPENCODE_SERVER_MODE=standalone`, which starts a separate server on an explicit URL and does not follow a registered one
 - [x] Project and session management from Telegram (`/projects`, `/worktree`, `/sessions`, `/new`)
+- [x] Search sessions by title or ID and mark the attached session in `/sessions`
 - [x] Cross-project recent sessions with status and direct attachment (`/recent`)
 - [x] Sessions, projects and worktrees from folders that no longer exist hidden from the lists, with a notice instead of a failed send there (OpenCode V2)
 - [x] Automatic tracking of the current OpenCode CLI session, including continuing it from Telegram, live updates, and external text input notifications
 - [x] Remote task execution, interruption, and local detachment support (`/abort`, `/detach`)
-- [x] Background notifications for detached/non-current sessions in the currently selected project/worktree
+- [x] Background notifications for detached/non-current sessions in the currently selected project/worktree, with an opt-out in `/settings` that defaults to on and does not cancel the request in OpenCode; an assistant-response notification names the session by its title and its own project, labelled the way `/recent` labels a folder, with an unnamed session reading as `new session`, while question and permission notifications keep their shorter text; a notification's open button selects that session's own project and worktree, whichever project is selected by the time it is pressed, and follows the session there
 - [x] Telegram-friendly result delivery, including sending generated code/files when needed
 - [x] Interactive question and permission handling directly in chat (buttons + custom answers)
-- [x] Live pinned session status in chat (project, model with variant in parentheses when set, context usage, changed files), with an opt-out in `/settings` that defaults to on
+- [x] Live pinned session status in chat (project, model with variant in parentheses when set, context usage, changed files from OpenCode's session diff rather than a sum of each edit), with an opt-out in `/settings` that defaults to on. On OpenCode V2, when the session has a goal, a line after the title shows its status and a short objective; no goal means no line
 - [x] In-chat controls for model, agent, variant, and context
 - [x] Built-in and custom command catalog access (`/commands`)
 - [x] Trusted local JSON commands from the persistent application home, executed without OpenCode or model tokens
 - [x] Skills catalog access (`/skills`)
 - [x] Scheduled task creation flow (`/task`), remembering the agent selected at creation and showing it (alongside the model) in the task confirmation and task details
 - [x] Scheduled task runtime execution with deferred Telegram delivery
-- [x] Scheduled task list and deletion flow (`/tasklist`)
+- [x] Scheduled task list and deletion flow (`/tasklist`), with individual recurring tasks enabled or disabled without deleting them
 - [x] Persistent settings between restarts (`settings.json`)
 - [x] UI localization support via i18n files
 - [x] Service message visibility controls (thinking content and diff-file attachments)
@@ -246,6 +252,7 @@ Agent picker behavior:
 - [x] Incoming Telegram rich formatted messages (Bot API 10.1): converted to Markdown, accepted anywhere text is accepted, with photos attached and unsupported message types answered explicitly
 - [x] Startup either reaches Telegram polling or the process exits: transient Telegram failures are retried in-process; a bad token or other fatal startup error exits with code 1
 - [x] After a Telegram outage the bot answers again without restart; an undelivered assistant reply is not resent, and skipped stale messages are reported once
+- [x] OpenCode V2 session goal (`/goal`): separate text input and confirmed start, persistent short objective with Pause/Continue/Delete below waiting messages, no replacement, and normal Queue/Steer/Off routing; the server continues the same session after idle, `/abort` and `/start` pause it, and goal kickoff and continuation stay hidden
 
 ## Current Task List
 

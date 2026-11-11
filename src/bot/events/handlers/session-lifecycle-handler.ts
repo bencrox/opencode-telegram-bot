@@ -1,6 +1,7 @@
 import { t } from "../../../i18n/index.js";
 import { logger } from "../../../utils/logger.js";
 import { markAttachedSessionIdle } from "../../../app/services/attach-service.js";
+import { getCurrentSession } from "../../../app/services/session-service.js";
 import { shouldSuppressUserAbortSessionError } from "../../../app/managers/abort-suppression-manager.js";
 import { clearPromptResponseMode } from "../../handlers/prompt.js";
 import { dispatchNextQueuedPrompt } from "../../handlers/prompt-queue-dispatch.js";
@@ -20,6 +21,7 @@ type SessionLifecycleDeps = EventHandlerDeps<
   | "assistantRunState"
   | "attachManager"
   | "foregroundSessionState"
+  | "goalService"
   | "keyboardManager"
   | "scheduledTaskRuntime"
   | "summaryAggregator"
@@ -45,7 +47,7 @@ function endRunningForegroundCalls(
 export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): void {
   const { runtime, policy, summaryAggregator } = deps;
 
-  summaryAggregator.setOnSessionIdle(async (sessionId, { interrupted }) => {
+  summaryAggregator.setOnSessionIdle(async (sessionId, { interrupted, reason }) => {
     wakePromptHandover(sessionId);
     resetStreamThrottle(sessionId);
     await markAttachedSessionIdle(sessionId, deps);
@@ -65,13 +67,23 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
     }
     await runtime.getCompletionTask(sessionId)?.catch(() => undefined);
 
-    // A turn the bot did not start that was stopped from a client ends like an aborted one.
-    if (
+    // A server stop sends no footer even if this idle arrives before the reconnect clear.
+    // A reject or a cancelled question shares this idle with a client stop and stays footerless.
+    // An observed turn that never completed still ends like an abort. A completed one keeps
+    // its run so the footer can name the interruption.
+    if (interrupted && reason === "shutdown") {
+      deps.assistantRunState.clearRun(sessionId, "session_shutdown");
+    } else if (deps.assistantRunState.isFooterSuppressed(sessionId)) {
+      deps.assistantRunState.clearRun(sessionId, "session_footer_suppressed");
+    } else if (
       interrupted &&
       deps.assistantRunState.hasRun(sessionId) &&
-      !deps.assistantRunState.hasBotRun(sessionId)
+      !deps.assistantRunState.hasBotRun(sessionId) &&
+      !deps.assistantRunState.isResponseCompleted(sessionId)
     ) {
       deps.assistantRunState.clearRun(sessionId, "session_interrupted");
+    } else if (interrupted && deps.assistantRunState.isResponseCompleted(sessionId)) {
+      deps.assistantRunState.markInterrupted(sessionId);
     }
 
     const completedRun = deps.assistantRunState.isResponseCompleted(sessionId)
@@ -101,6 +113,10 @@ export function registerSessionLifecycleHandlers(deps: SessionLifecycleDeps): vo
       deps.foregroundSessionState.markIdle(sessionId);
       await deps.scheduledTaskRuntime.flushDeferredDeliveries();
       void dispatchNextQueuedPrompt();
+      const followed = getCurrentSession();
+      if (followed?.id === sessionId) {
+        void deps.goalService.refresh(sessionId, followed.directory, true);
+      }
     }
   });
 

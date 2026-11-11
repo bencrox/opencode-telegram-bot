@@ -7,7 +7,9 @@ import type {
   PromptQueueMode,
   ResponseStreamingMode,
   ScheduledTaskSessionIgnoreInfo,
+  SessionReplyReadState,
   Settings,
+  TodoSnapshotInfo,
 } from "../types/settings.js";
 import { config } from "../../config.js";
 import { getRuntimePaths } from "../../runtime/paths.js";
@@ -23,17 +25,27 @@ function cloneScheduledTaskSessionIgnores(
   return ignores?.map((ignore) => ({ ...ignore }));
 }
 
+function cloneSessionReplyReadState(
+  state: SessionReplyReadState | undefined,
+): SessionReplyReadState | undefined {
+  if (!state) return undefined;
+  return {
+    baselineAt: state.baselineAt,
+    sessions: Object.fromEntries(
+      Object.entries(state.sessions ?? {}).map(([sessionId, position]) => [
+        sessionId,
+        { ...position },
+      ]),
+    ),
+  };
+}
+
 function getSettingsFilePath(): string {
   return getRuntimePaths().settingsFilePath;
 }
 
 function getSettingsBackupFilePath(): string {
   return `${getSettingsFilePath()}.bak`;
-}
-
-// Lives next to the target file so the rename never crosses a volume boundary.
-function getSettingsTempFilePath(): string {
-  return `${getSettingsFilePath()}.tmp`;
 }
 
 // Set when settings were recovered from the backup: the target file still holds
@@ -59,10 +71,7 @@ async function readSettingsFile(): Promise<Settings> {
     return await readSettingsFileAt(settingsFilePath);
   } catch (primaryError) {
     if (!isFileNotFound(primaryError)) {
-      logger.warn(
-        `[SettingsManager] Cannot read settings file ${settingsFilePath}:`,
-        primaryError,
-      );
+      logger.warn(`[SettingsManager] Cannot read settings file ${settingsFilePath}:`, primaryError);
     }
 
     try {
@@ -87,10 +96,13 @@ async function readSettingsFile(): Promise<Settings> {
   }
 }
 
-async function writeSettingsFileAtomically(settings: Settings): Promise<void> {
+async function writeSettingsFileAtomically(
+  settings: Settings,
+  settingsFilePath: string,
+): Promise<void> {
   const fs = await import("fs/promises");
-  const settingsFilePath = getSettingsFilePath();
-  const tempFilePath = getSettingsTempFilePath();
+  // Keep the temporary file on the same volume as the captured destination.
+  const tempFilePath = `${settingsFilePath}.tmp`;
 
   await fs.mkdir(path.dirname(settingsFilePath), { recursive: true });
 
@@ -99,7 +111,7 @@ async function writeSettingsFileAtomically(settings: Settings): Promise<void> {
 
     if (!skipNextBackupRotation) {
       try {
-        await fs.rename(settingsFilePath, getSettingsBackupFilePath());
+        await fs.rename(settingsFilePath, `${settingsFilePath}.bak`);
       } catch (error) {
         // Nothing to back up on the very first write.
         if (!isFileNotFound(error)) {
@@ -121,13 +133,14 @@ async function writeSettingsFileAtomically(settings: Settings): Promise<void> {
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 function writeSettingsFile(settings: Settings): Promise<void> {
+  const settingsFilePath = getSettingsFilePath();
   settingsWriteQueue = settingsWriteQueue
     .catch(() => {
       // Keep write queue alive after failed writes.
     })
     .then(async () => {
       try {
-        await writeSettingsFileAtomically(settings);
+        await writeSettingsFileAtomically(settings, settingsFilePath);
       } catch (err) {
         logger.error("[SettingsManager] Error writing settings file:", err);
       }
@@ -229,6 +242,15 @@ export function setPinnedDashboardEnabled(enabled: boolean): void {
   void writeSettingsFile(currentSettings);
 }
 
+export function getShowBackgroundSessionNotifications(): boolean {
+  return currentSettings.showBackgroundSessionNotifications ?? true;
+}
+
+export function setShowBackgroundSessionNotifications(enabled: boolean): void {
+  currentSettings.showBackgroundSessionNotifications = enabled;
+  void writeSettingsFile(currentSettings);
+}
+
 export type { PromptQueueMode, ResponseStreamingMode };
 
 export function getResponseStreamingMode(): ResponseStreamingMode {
@@ -313,6 +335,16 @@ export function clearPinnedMessageId(): void {
   void writeSettingsFile(currentSettings);
 }
 
+export function getLastTodoSnapshot(): TodoSnapshotInfo | undefined {
+  const info = currentSettings.lastTodoSnapshot;
+  return info ? { ...info } : undefined;
+}
+
+export function setLastTodoSnapshot(info: TodoSnapshotInfo): Promise<void> {
+  currentSettings.lastTodoSnapshot = { ...info };
+  return writeSettingsFile(currentSettings);
+}
+
 export function getSessionDirectoryCache(): SessionDirectoryCacheInfo | undefined {
   return currentSettings.sessionDirectoryCache;
 }
@@ -336,6 +368,21 @@ export function setScheduledTasks(tasks: ScheduledTask[]): Promise<void> {
   return writeSettingsFile(currentSettings);
 }
 
+export function setScheduledTasksConfirmed(tasks: ScheduledTask[]): Promise<void> {
+  const settingsFilePath = getSettingsFilePath();
+  const write = settingsWriteQueue.then(async () => {
+    await writeSettingsFileAtomically(
+      { ...currentSettings, scheduledTasks: cloneScheduledTasks(tasks) },
+      settingsFilePath,
+    );
+    currentSettings.scheduledTasks = cloneScheduledTasks(tasks);
+  });
+  settingsWriteQueue = write.catch((error: unknown) => {
+    logger.error("[SettingsManager] Error writing scheduled tasks:", error);
+  });
+  return write;
+}
+
 export function getScheduledTaskSessionIgnores(): ScheduledTaskSessionIgnoreInfo[] {
   return cloneScheduledTaskSessionIgnores(currentSettings.scheduledTaskSessionIgnores) ?? [];
 }
@@ -347,9 +394,17 @@ export function setScheduledTaskSessionIgnores(
   return writeSettingsFile(currentSettings);
 }
 
+export function getSessionReplyReadState(): SessionReplyReadState | undefined {
+  return cloneSessionReplyReadState(currentSettings.sessionReplyReadState);
+}
+
+export function setSessionReplyReadState(state: SessionReplyReadState): Promise<void> {
+  currentSettings.sessionReplyReadState = cloneSessionReplyReadState(state);
+  return writeSettingsFile(currentSettings);
+}
+
 export function __resetSettingsForTests(): void {
   currentSettings = {};
-  settingsWriteQueue = Promise.resolve();
   skipNextBackupRotation = false;
 }
 
@@ -364,6 +419,7 @@ function applyInitialSettingsPreset(preset: Record<string, unknown>): void {
     "showThinkingContent",
     "showAssistantRunFooter",
     "pinnedDashboardEnabled",
+    "showBackgroundSessionNotifications",
     "responseStreamingMode",
     "sendDiffFileAttachments",
     "promptQueueEnabled",
@@ -397,11 +453,9 @@ function applyInitialSettingsPreset(preset: Record<string, unknown>): void {
         currentSettings.responseStreamingMode = value as ResponseStreamingMode;
       }
     } else {
-      // Boolean settings: compactOutputMode, deleteCompactProgressOnFinish, showThinkingContent, showAssistantRunFooter, pinnedDashboardEnabled, sendDiffFileAttachments, promptQueueEnabled
+      // Boolean settings: compactOutputMode, deleteCompactProgressOnFinish, showThinkingContent, showAssistantRunFooter, pinnedDashboardEnabled, showBackgroundSessionNotifications, sendDiffFileAttachments, promptQueueEnabled
       if (typeof value !== "boolean") {
-        throw new Error(
-          `INITIAL_SETTINGS_PRESET: "${key}" must be a boolean.`,
-        );
+        throw new Error(`INITIAL_SETTINGS_PRESET: "${key}" must be a boolean.`);
       }
       switch (key) {
         case "compactOutputMode":
@@ -423,6 +477,10 @@ function applyInitialSettingsPreset(preset: Record<string, unknown>): void {
         case "pinnedDashboardEnabled":
           if (currentSettings.pinnedDashboardEnabled === undefined)
             currentSettings.pinnedDashboardEnabled = value;
+          break;
+        case "showBackgroundSessionNotifications":
+          if (currentSettings.showBackgroundSessionNotifications === undefined)
+            currentSettings.showBackgroundSessionNotifications = value;
           break;
         case "sendDiffFileAttachments":
           if (currentSettings.sendDiffFileAttachments === undefined)
@@ -467,6 +525,17 @@ export async function loadSettings(): Promise<void> {
   currentSettings.scheduledTasks = cloneScheduledTasks(loadedSettings.scheduledTasks) ?? [];
   currentSettings.scheduledTaskSessionIgnores =
     cloneScheduledTaskSessionIgnores(loadedSettings.scheduledTaskSessionIgnores) ?? [];
+
+  // Everything finished before the feature arrived reads as already shown; only later replies
+  // are eligible for a mark.
+  if (
+    typeof loadedSettings.sessionReplyReadState?.baselineAt !== "number" ||
+    typeof loadedSettings.sessionReplyReadState.sessions !== "object" ||
+    loadedSettings.sessionReplyReadState.sessions === null
+  ) {
+    currentSettings.sessionReplyReadState = { baselineAt: Date.now(), sessions: {} };
+    requiresRewrite = true;
+  }
 
   applyInitialSettingsPreset(config.bot.initialSettingsPreset);
 

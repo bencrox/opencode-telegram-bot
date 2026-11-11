@@ -1,6 +1,6 @@
-import os from "node:os";
 import path from "node:path";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { createTestHome } from "../../helpers/test-environment.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config } from "../../../src/config.js";
 import { setRuntimeMode } from "../../../src/runtime/mode.js";
@@ -9,21 +9,28 @@ import {
   __resetSettingsForTests,
   flushSettings,
   getCompactOutputMode,
+  getLastTodoSnapshot,
   getPromptQueueMode,
   getResponseStreamingMode,
   getSendDiffFileAttachments,
   getPinnedDashboardEnabled,
+  getSessionReplyReadState,
   getShowAssistantRunFooter,
+  getShowBackgroundSessionNotifications,
   getShowThinkingContent,
   getScheduledTasks,
   getTtsMode,
   loadSettings,
   setCompactOutputMode,
+  setLastTodoSnapshot,
   setPromptQueueMode,
   setScheduledTasks,
+  setScheduledTasksConfirmed,
   setResponseStreamingMode,
   setSendDiffFileAttachments,
+  setSessionReplyReadState,
   setShowAssistantRunFooter,
+  setShowBackgroundSessionNotifications,
   setShowThinkingContent,
 } from "../../../src/app/stores/settings-store.js";
 
@@ -32,15 +39,16 @@ describe("app/stores/settings-store", () => {
 
   beforeEach(async () => {
     delete process.env.INITIAL_SETTINGS_PRESET;
-    tempHome = await mkdtemp(path.join(os.tmpdir(), "opencode-telegram-settings-store-"));
-    process.env.OPENCODE_TELEGRAM_HOME = tempHome;
+    tempHome = await createTestHome("opencode-telegram-settings-store-");
+    vi.stubEnv("OPENCODE_TELEGRAM_HOME", tempHome);
     setRuntimeMode("installed");
     __resetSettingsForTests();
   });
 
   afterEach(async () => {
-    delete process.env.OPENCODE_TELEGRAM_HOME;
+    await flushSettings();
     __resetSettingsForTests();
+    vi.unstubAllEnvs();
     await rm(tempHome, { recursive: true, force: true });
   });
 
@@ -58,6 +66,7 @@ describe("app/stores/settings-store", () => {
       await loadSettings();
 
       expect(getTtsMode()).toBe(expectedMode);
+      await flushSettings();
     },
   );
 
@@ -91,6 +100,23 @@ describe("app/stores/settings-store", () => {
     await loadSettings();
 
     expect(getPinnedDashboardEnabled()).toBe(true);
+  });
+
+  it("shows background session notifications by default", async () => {
+    await loadSettings();
+
+    expect(getShowBackgroundSessionNotifications()).toBe(true);
+  });
+
+  it("loads the background session notifications setting from settings.json", async () => {
+    await writeFile(
+      path.join(tempHome, "settings.json"),
+      JSON.stringify({ showBackgroundSessionNotifications: false }),
+    );
+
+    await loadSettings();
+
+    expect(getShowBackgroundSessionNotifications()).toBe(false);
   });
 
   it("loads the pinned session dashboard setting from settings.json", async () => {
@@ -138,18 +164,19 @@ describe("app/stores/settings-store", () => {
     });
 
     it.each([true, false])(
-      "starts in steer on a V2 server with promptQueueEnabled=%s and leaves settings.json as is",
+      "starts in steer on a V2 server with promptQueueEnabled=%s and writes no queue mode",
       async (oldValue) => {
         config.opencode.serverVersion = "v2";
         const settingsPath = path.join(tempHome, "settings.json");
-        const original = JSON.stringify({ promptQueueEnabled: oldValue });
-        await writeFile(settingsPath, original);
+        await writeFile(settingsPath, JSON.stringify({ promptQueueEnabled: oldValue }));
 
         await loadSettings();
         await flushSettings();
 
         expect(getPromptQueueMode()).toBe("steer");
-        expect(await readFile(settingsPath, "utf-8")).toBe(original);
+        const stored = JSON.parse(await readFile(settingsPath, "utf-8"));
+        expect(stored.promptQueueEnabled).toBe(oldValue);
+        expect(stored).not.toHaveProperty("promptQueueMode");
       },
     );
 
@@ -192,7 +219,7 @@ describe("app/stores/settings-store", () => {
     vi.resetModules();
     vi.stubEnv(
       "INITIAL_SETTINGS_PRESET",
-      '{"showAssistantRunFooter":false,"compactOutputMode":true,"deleteCompactProgressOnFinish":true,"ttsMode":"auto","responseStreamingMode":"draft","sendDiffFileAttachments":false,"showThinkingContent":false,"promptQueueEnabled":true,"pinnedDashboardEnabled":false}',
+      '{"showAssistantRunFooter":false,"compactOutputMode":true,"deleteCompactProgressOnFinish":true,"ttsMode":"auto","responseStreamingMode":"draft","sendDiffFileAttachments":false,"showThinkingContent":false,"promptQueueEnabled":true,"pinnedDashboardEnabled":false,"showBackgroundSessionNotifications":false}',
     );
 
     const store = await import("../../../src/app/stores/settings-store.js");
@@ -207,7 +234,9 @@ describe("app/stores/settings-store", () => {
     expect(store.getShowThinkingContent()).toBe(false);
     expect(store.getPromptQueueMode()).toBe("queue");
     expect(store.getPinnedDashboardEnabled()).toBe(false);
+    expect(store.getShowBackgroundSessionNotifications()).toBe(false);
 
+    await store.flushSettings();
     vi.unstubAllEnvs();
     vi.resetModules();
   });
@@ -225,6 +254,39 @@ describe("app/stores/settings-store", () => {
     await store.loadSettings();
 
     expect(store.getShowAssistantRunFooter()).toBe(true);
+
+    await store.flushSettings();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("does not overwrite a persisted background notifications setting with INITIAL_SETTINGS_PRESET", async () => {
+    await writeFile(
+      path.join(tempHome, "settings.json"),
+      JSON.stringify({ showBackgroundSessionNotifications: true }),
+    );
+    vi.resetModules();
+    vi.stubEnv("INITIAL_SETTINGS_PRESET", '{"showBackgroundSessionNotifications":false}');
+    vi.stubEnv("OPENCODE_TELEGRAM_HOME", tempHome);
+
+    const store = await import("../../../src/app/stores/settings-store.js");
+    await store.loadSettings();
+
+    expect(store.getShowBackgroundSessionNotifications()).toBe(true);
+
+    await store.flushSettings();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("throws when the background notifications preset value is not a boolean", async () => {
+    vi.resetModules();
+    vi.stubEnv("INITIAL_SETTINGS_PRESET", '{"showBackgroundSessionNotifications":"off"}');
+
+    await expect(async () => {
+      const store = await import("../../../src/app/stores/settings-store.js");
+      await store.loadSettings();
+    }).rejects.toThrow(/"showBackgroundSessionNotifications" must be a boolean/);
 
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -306,6 +368,79 @@ describe("app/stores/settings-store", () => {
     expect(getShowAssistantRunFooter()).toBe(false);
   });
 
+  it("starts the unread reply state at the upgrade for a settings file without one", async () => {
+    await writeFile(path.join(tempHome, "settings.json"), JSON.stringify({ compactOutputMode: true }));
+
+    const before = Date.now();
+    await loadSettings();
+
+    const state = getSessionReplyReadState();
+    expect(state?.sessions).toEqual({});
+    expect(state?.baselineAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it("keeps the unread reply baseline and positions across a restart", async () => {
+    await writeFile(
+      path.join(tempHome, "settings.json"),
+      JSON.stringify({
+        sessionReplyReadState: { baselineAt: 1000, sessions: { s: { readAt: 2000, unreadAt: 3000 } } },
+      }),
+    );
+
+    await loadSettings();
+
+    expect(getSessionReplyReadState()).toEqual({
+      baselineAt: 1000,
+      sessions: { s: { readAt: 2000, unreadAt: 3000 } },
+    });
+  });
+
+  it("persists the unread reply state to settings.json", async () => {
+    await loadSettings();
+
+    await setSessionReplyReadState({ baselineAt: 10, sessions: { s: { readAt: 20 } } });
+
+    await vi.waitFor(async () => {
+      const settings = JSON.parse(await readFile(path.join(tempHome, "settings.json"), "utf-8"));
+      expect(settings.sessionReplyReadState).toEqual({ baselineAt: 10, sessions: { s: { readAt: 20 } } });
+    });
+  });
+
+  it("has no tracked todo snapshot in a settings file without one", async () => {
+    await writeFile(path.join(tempHome, "settings.json"), JSON.stringify({ compactOutputMode: true }));
+
+    await loadSettings();
+
+    expect(getLastTodoSnapshot()).toBeUndefined();
+  });
+
+  it("keeps the tracked todo snapshot across a restart", async () => {
+    await writeFile(
+      path.join(tempHome, "settings.json"),
+      JSON.stringify({ lastTodoSnapshot: { chatId: 42, messageId: 77, done: 2, total: 5 } }),
+    );
+
+    await loadSettings();
+
+    expect(getLastTodoSnapshot()).toEqual({ chatId: 42, messageId: 77, done: 2, total: 5 });
+  });
+
+  it("persists the tracked todo snapshot to settings.json", async () => {
+    await loadSettings();
+
+    await setLastTodoSnapshot({ chatId: 42, messageId: 78, done: 1, total: 3 });
+
+    await vi.waitFor(async () => {
+      const settings = JSON.parse(await readFile(path.join(tempHome, "settings.json"), "utf-8"));
+      expect(settings.lastTodoSnapshot).toEqual({
+        chatId: 42,
+        messageId: 78,
+        done: 1,
+        total: 3,
+      });
+    });
+  });
+
   it("persists compact output mode to settings.json", async () => {
     await loadSettings();
 
@@ -363,6 +498,7 @@ describe("app/stores/settings-store", () => {
 
     expect(store.getPromptQueueMode()).toBe("queue");
 
+    await store.flushSettings();
     vi.unstubAllEnvs();
     vi.resetModules();
   });
@@ -377,8 +513,21 @@ describe("app/stores/settings-store", () => {
 
     expect(store.getPromptQueueMode()).toBe("steer");
 
+    await store.flushSettings();
     vi.unstubAllEnvs();
     vi.resetModules();
+  });
+
+  it("persists background session notifications setting to settings.json", async () => {
+    await loadSettings();
+
+    setShowBackgroundSessionNotifications(false);
+
+    expect(getShowBackgroundSessionNotifications()).toBe(false);
+    await vi.waitFor(async () => {
+      const settings = JSON.parse(await readFile(path.join(tempHome, "settings.json"), "utf-8"));
+      expect(settings.showBackgroundSessionNotifications).toBe(false);
+    });
   });
 
   it("persists assistant run footer setting to settings.json", async () => {
@@ -413,6 +562,69 @@ describe("app/stores/settings-store", () => {
     const settings = JSON.parse(await readFile(path.join(tempHome, "settings.json"), "utf-8"));
     expect(settings.compactOutputMode).toBe(true);
     expect(settings.showThinkingContent).toBe(false);
+  });
+
+  it.each(["setter", "confirmed tasks"])(
+    "keeps a queued %s write in its original home after environment restoration and reset",
+    async (kind) => {
+      const otherHome = await createTestHome("opencode-settings-other-");
+      const sentinel = '{"currentAgent":"keep-me"}';
+      await writeFile(path.join(otherHome, "settings.json"), sentinel);
+      await writeFile(path.join(otherHome, "settings.json.bak"), sentinel);
+      try {
+        await loadSettings();
+        if (kind === "setter") {
+          setCompactOutputMode(true);
+        } else {
+          void setScheduledTasksConfirmed([]);
+        }
+        vi.stubEnv("OPENCODE_TELEGRAM_HOME", otherHome);
+        __resetSettingsForTests();
+        await flushSettings();
+
+        expect(await readFile(path.join(otherHome, "settings.json"), "utf8")).toBe(sentinel);
+        expect(await readFile(path.join(otherHome, "settings.json.bak"), "utf8")).toBe(sentinel);
+        await expect(access(path.join(otherHome, "settings.json.tmp"))).rejects.toThrow();
+        await expect(access(path.join(tempHome, "settings.json"))).resolves.toBeUndefined();
+      } finally {
+        await flushSettings();
+        await rm(otherHome, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("keeps backup rotation beside the primary when the environment changes during a write", async () => {
+    const otherHome = await createTestHome("opencode-settings-rotation-");
+    const original = '{"compactOutputMode":false}';
+    const sentinel = '{"currentAgent":"backup-must-stay"}';
+    await writeFile(path.join(tempHome, "settings.json"), original);
+    await writeFile(path.join(otherHome, "settings.json.bak"), sentinel);
+    const originalFs = await vi.importActual<typeof import("fs/promises")>("fs/promises");
+    vi.doMock("fs/promises", () => ({
+      ...originalFs,
+      writeFile: async (...args: Parameters<typeof originalFs.writeFile>) => {
+        await originalFs.writeFile(...args);
+        if (args[0] === path.join(tempHome, "settings.json.tmp")) {
+          vi.stubEnv("OPENCODE_TELEGRAM_HOME", otherHome);
+        }
+      },
+    }));
+    try {
+      await loadSettings();
+      setCompactOutputMode(true);
+      await flushSettings();
+      expect(process.env.OPENCODE_TELEGRAM_HOME).toBe(otherHome);
+      const rotated = JSON.parse(await readFile(path.join(tempHome, "settings.json.bak"), "utf8"));
+      expect(rotated).not.toHaveProperty("currentAgent");
+      expect(await readFile(path.join(otherHome, "settings.json.bak"), "utf8")).toBe(sentinel);
+      expect(
+        JSON.parse(await readFile(path.join(tempHome, "settings.json"), "utf8")),
+      ).toMatchObject({ compactOutputMode: true });
+    } finally {
+      await flushSettings();
+      vi.doUnmock("fs/promises");
+      await rm(otherHome, { recursive: true, force: true });
+    }
   });
 
   describe("atomic writes and backup recovery", () => {
@@ -451,12 +663,18 @@ describe("app/stores/settings-store", () => {
 
     it("leaves no backup and no temporary file after the first write", async () => {
       await loadSettings();
-
-      setCompactOutputMode(true);
       await flushSettings();
 
       expect(await exists(settingsPath())).toBe(true);
       expect(await exists(backupPath())).toBe(false);
+      expect(await exists(tempPath())).toBe(false);
+
+      setCompactOutputMode(true);
+      await flushSettings();
+
+      expect(JSON.parse(await readFile(settingsPath(), "utf8"))).toMatchObject({
+        compactOutputMode: true,
+      });
       expect(await exists(tempPath())).toBe(false);
     });
 

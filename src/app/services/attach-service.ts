@@ -60,7 +60,7 @@ export function configureAttachPresentation(deps: AttachPresentationDeps | null)
 
 export type AttachStateDeps = Pick<AppContainer, "attachManager">;
 
-export type DetachSessionDeps = Pick<AppContainer, "attachManager" | "resetAggregator">;
+export type DetachSessionDeps = Pick<AppContainer, "attachManager" | "resetAggregator" | "goalManager">;
 
 type AttachRestoreDeps = Pick<
   AppContainer,
@@ -75,6 +75,7 @@ export interface AttachSessionDeps extends AttachRestoreDeps {
   forceFullRestore?: boolean | undefined;
   /** The session was created a moment ago, so it has no values to load. */
   sessionCreated?: boolean | undefined;
+  goalService?: Pick<AppContainer, "goalService">["goalService"] | undefined;
 }
 
 export interface AttachSessionResult {
@@ -328,6 +329,8 @@ export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSe
   const { attachManager, permissionManager, questionManager, summaryAggregator } = deps;
   const alreadyAttached = attachManager.isAttachedSession(session.id, session.directory);
 
+  deps.goalService?.follow(session.id);
+
   await attachPresentation?.preparePinnedSession({
     api: bot.api,
     chatId,
@@ -407,6 +410,8 @@ export async function attachToSession(deps: AttachSessionDeps): Promise<AttachSe
         )
       : 0;
   }
+
+  await deps.goalService?.refresh(session.id, session.directory, false);
 
   return {
     busy,
@@ -610,6 +615,7 @@ export async function restorePendingInteractionsAfterReconnect(
 }
 
 export function detachAttachedSession(reason: string, deps: DetachSessionDeps): void {
+  deps.goalManager.clear();
   if (!deps.attachManager.isAttached()) {
     return;
   }

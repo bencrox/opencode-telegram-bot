@@ -1,6 +1,5 @@
-import os from "node:os";
-import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
+import { createTestHome } from "../../helpers/test-environment.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, Context } from "grammy";
 import type { Event } from "@opencode-ai/sdk/v2";
@@ -37,8 +36,9 @@ type FakeBotApi = {
 };
 
 function createFakeBot(): { bot: Bot<Context>; api: FakeBotApi } {
+  let nextMessageId = 100;
   const api: FakeBotApi = {
-    sendMessage: vi.fn().mockResolvedValue({ message_id: 100 }),
+    sendMessage: vi.fn(async () => ({ message_id: nextMessageId++ })),
     sendRichMessage: vi
       .fn()
       .mockRejectedValue(Object.assign(new Error("Bad Request: rich message unavailable"), { error_code: 400 })),
@@ -302,18 +302,35 @@ function emitTaskTool(
   } as unknown as Event);
 }
 
-function emitTodoTool(summaryAggregator: { processEvent(event: Event): void }): void {
+function emitTodoTool(
+  summaryAggregator: { processEvent(event: Event): void },
+  options: {
+    status?: "pending" | "running" | "completed" | "error";
+    todos?: Array<{ content: string; status: string }>;
+    callId?: string;
+  } = {},
+): void {
+  const { status = "running", todos, callId = "call-todo" } = options;
+  const input = todos ? { todos } : {};
   summaryAggregator.processEvent({
     type: "message.part.updated",
     properties: {
       part: {
-        id: "part-call-todo",
+        id: `part-${callId}`,
         sessionID: "session-1",
         messageID: "message-1",
         type: "tool",
-        callID: "call-todo",
+        callID: callId,
         tool: "todowrite",
-        state: { status: "running", input: {}, metadata: {} },
+        state:
+          status === "pending"
+            ? { status, input, raw: "" }
+            : {
+                status,
+                input,
+                metadata: status === "completed" && todos ? { todos } : {},
+                time: { start: Date.now(), ...(status === "completed" ? { end: Date.now() } : {}) },
+              },
       },
     },
   } as unknown as Event);
@@ -523,7 +540,7 @@ describe("bot/services/event-subscription-service", () => {
     vi.stubEnv("TELEGRAM_ALLOWED_USER_ID", "123456789");
     vi.stubEnv("OPENCODE_MODEL_PROVIDER", "test-provider");
     vi.stubEnv("OPENCODE_MODEL_ID", "test-model");
-    vi.stubEnv("OPENCODE_TELEGRAM_HOME", await mkdtemp(path.join(os.tmpdir(), "event-service-")));
+    vi.stubEnv("OPENCODE_TELEGRAM_HOME", await createTestHome("event-service-"));
     tempHome = process.env.OPENCODE_TELEGRAM_HOME!;
     setRuntimeMode("installed");
 
@@ -540,17 +557,13 @@ describe("bot/services/event-subscription-service", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
-    // Settings writes scheduled while timers were faked need a real tick to
-    // land before the temp home is removed.
-    await new Promise((resolve) => setTimeout(resolve, 20));
     activeService?.cleanup("test_cleanup");
     activeService = null;
 
     const settingsStore = await import("../../../src/app/stores/settings-store.js");
+    await settingsStore.flushSettings();
     settingsStore.__resetSettingsForTests();
     vi.unstubAllEnvs();
-    // Settings writes can still be landing on Windows when the temp home is
-    // removed, so retry instead of failing the test in teardown.
     await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
@@ -674,16 +687,176 @@ describe("bot/services/event-subscription-service", () => {
       expect(api.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("starts a todo stream after an earlier ordinary tool stream", async () => {
+    it("starts a todo snapshot in its own message after an earlier ordinary tool line", async () => {
       const { api, summaryAggregator } = await setupService(false);
       useTrackerFakeTimers();
 
       emitBashTool(summaryAggregator, "running", { command: "sleep 60" });
-      emitTodoTool(summaryAggregator);
+      emitTodoTool(summaryAggregator, {
+        todos: [{ content: "Read the README", status: "pending" }],
+      });
       await vi.advanceTimersByTimeAsync(5000);
 
       expect(String(api.sendMessage.mock.calls[0]?.[1])).toContain("sleep 60");
       expect(String(api.sendMessage.mock.calls[1]?.[1])).toContain("todowrite");
+    });
+
+    it("draws a running todo call's checklist from the arguments it carries", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitTodoTool(summaryAggregator, {
+        todos: [
+          { content: "Read the README", status: "completed" },
+          { content: "Write a summary", status: "in_progress" },
+          { content: "Ship it", status: "pending" },
+        ],
+      });
+      await flushPendingDispatch();
+
+      const text = collectSentTexts(api).join("\n");
+      expect(text).toContain("⏳ 📝 todowrite (3)");
+      expect(text).toContain("✅ Read the README");
+      expect(text).toContain("🔄 Write a summary");
+      expect(text).toContain("🔲 Ship it");
+    });
+
+    it("draws nothing for a todo call whose arguments are still being composed", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitTodoTool(summaryAggregator, {
+        status: "pending",
+        todos: [{ content: "Read the README", status: "pending" }],
+      });
+      await flushPendingDispatch();
+
+      expect(collectSentTexts(api)).toEqual([]);
+    });
+
+    it("keeps one message for a todo call from running to finished", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+      const todos = [
+        { content: "Read the README", status: "completed" },
+        { content: "Write a summary", status: "in_progress" },
+      ];
+
+      emitTodoTool(summaryAggregator, { todos });
+      await flushPendingDispatch();
+      emitTodoTool(summaryAggregator, {
+        status: "completed",
+        todos: [
+          { content: "Read the README", status: "completed" },
+          { content: "Write a summary", status: "completed" },
+        ],
+      });
+      await flushPendingDispatch();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const finalEdit = api.editMessageText.mock.calls.filter((call) => call[1] === 100).at(-1);
+      expect(String(finalEdit?.[2])).toContain("✅ Read the README");
+      expect(String(finalEdit?.[2])).toContain("✅ Write a summary");
+    });
+
+    it("opens a new message for the next todo call and collapses the previous one", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitTodoTool(summaryAggregator, {
+        todos: [
+          { content: "Read the README", status: "completed" },
+          { content: "Write a summary", status: "pending" },
+        ],
+      });
+      await flushPendingDispatch();
+
+      emitTodoTool(summaryAggregator, {
+        callId: "call-todo-2",
+        todos: [
+          { content: "List the project root", status: "pending" },
+          { content: "Ship it", status: "pending" },
+        ],
+      });
+      await flushPendingDispatch();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(2);
+      const collapse = api.editMessageText.mock.calls.filter((call) => call[1] === 100).at(-1);
+      expect(String(collapse?.[2])).toBe("📝 todowrite (1/2)");
+      expect(String(api.sendMessage.mock.calls[1]?.[1])).toContain("List the project root");
+    });
+
+    it("opens a todo snapshot below an earlier tool line", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitBashTool(summaryAggregator, "running", { command: "sleep 60" });
+      emitTodoTool(summaryAggregator, {
+        todos: [{ content: "Read the README", status: "pending" }],
+      });
+      await flushPendingDispatch();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(2);
+      expect(String(api.sendMessage.mock.calls[0]?.[1])).toContain("sleep 60");
+      expect(String(api.sendMessage.mock.calls[1]?.[1])).toContain("todowrite");
+    });
+
+    it("leaves the previous snapshot alone for a todo call whose list is not known", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitTodoTool(summaryAggregator, {
+        todos: [{ content: "Read the README", status: "pending" }],
+      });
+      await flushPendingDispatch();
+
+      emitTodoTool(summaryAggregator, { callId: "call-todo-2" });
+      await flushPendingDispatch();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const collapsed = api.editMessageText.mock.calls.filter((call) =>
+        String(call[2]).startsWith("📝 todowrite (") && String(call[2]).includes("/"),
+      );
+      expect(collapsed).toHaveLength(0);
+    });
+
+    it("keeps a reply above a todo snapshot that opens after it", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitAssistantTextPart(summaryAggregator, "Working on it");
+      emitTodoTool(summaryAggregator, {
+        todos: [{ content: "Read the README", status: "pending" }],
+      });
+      await flushPendingDispatch();
+
+      const texts = api.sendMessage.mock.calls.map((call) => String(call[1]));
+      const replyIndex = texts.findIndex((text) => text.includes("Working on it"));
+      const todoIndex = texts.findIndex((text) => text.includes("todowrite"));
+      expect(replyIndex).toBeGreaterThanOrEqual(0);
+      expect(todoIndex).toBeGreaterThan(replyIndex);
+    });
+
+    it("finishes a todo snapshot cut short without the running mark", async () => {
+      const { api, summaryAggregator } = await setupService(false);
+      useTrackerFakeTimers();
+
+      emitTodoTool(summaryAggregator, {
+        todos: [
+          { content: "Read the README", status: "completed" },
+          { content: "Write a summary", status: "in_progress" },
+        ],
+      });
+      await flushPendingDispatch();
+
+      emitTodoTool(summaryAggregator, { status: "error" });
+      await flushPendingDispatch();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const finalEdit = api.editMessageText.mock.calls.filter((call) => call[1] === 100).at(-1);
+      const text = String(finalEdit?.[2]);
+      expect(text).toContain("✅ Read the README");
+      expect(text).not.toContain("⏳");
     });
 
     it("flushes a running tool line above its permission prompt", async () => {

@@ -1,12 +1,13 @@
 import { InlineKeyboard } from "grammy";
 import { getProjectFolderName } from "./project-selection-menu.js";
+import { resolveProjectName } from "./project-name.js";
 import type { RecentSession, RecentStatus } from "../../app/services/recent-sessions-service.js";
 import { t } from "../../i18n/index.js";
 import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
 
 export const RECENT_CALLBACK_PREFIX = "recent:";
 const GLYPHS: Record<RecentStatus, string> = {
-  running: "⏳", idle: "○", question: "❓", permission: "🔐",
+  running: "⏳", idle: "○", question: "❓", permission: "🔐", unread: "🔔",
 };
 
 function shortenProject(name: string): string {
@@ -55,15 +56,9 @@ function projectLabels(names: string[]): string[] {
 
 function projectNames(rows: RecentSession[]): string[] {
   const directories = [...new Set(rows.map(({ session }) => session.directory))];
-  const parts = directories.map((directory) => directory.split(/[\\/]/).filter(Boolean));
-  const names = new Map<string, string>();
-  for (let i = 0; i < directories.length; i++) {
-    const segments = parts[i] ?? [];
-    let depth = 1;
-    while (depth < segments.length && parts.some((other, index) =>
-      index !== i && other.slice(-depth).join("/") === segments.slice(-depth).join("/"))) depth++;
-    names.set(directories[i]!, depth === 1 ? getProjectFolderName(directories[i]!) : segments.slice(-depth).join("/"));
-  }
+  const names = new Map(
+    directories.map((directory) => [directory, resolveProjectName(directory, directories)]),
+  );
   return rows.map(({ session }) => names.get(session.directory) ?? getProjectFolderName(session.directory));
 }
 
@@ -82,7 +77,7 @@ export function buildRecentMenu(rows: RecentSession[]): { text: string; keyboard
     keyboard.text(`${prefix}${trimmed}`, `${RECENT_CALLBACK_PREFIX}${index}`).row();
   });
   return {
-    text: [t("recent.heading"), "", `⏳ ${t("recent.running")} · ○ ${t("recent.idle")} · ❓ ${t("recent.question")} · 🔐 ${t("recent.permission")}`].join("\n"),
+    text: [t("recent.heading"), "", `⏳ ${t("recent.running")} · ○ ${t("recent.idle")} · 🔔 ${t("recent.status.unread")} · ❓ ${t("recent.question")} · 🔐 ${t("recent.permission")}`].join("\n"),
     keyboard,
   };
 }

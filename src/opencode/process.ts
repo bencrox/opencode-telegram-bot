@@ -1,13 +1,25 @@
 import { exec, execFile, spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, readFileSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import type { OpencodeServerVersion } from "../config.js";
+import { config, type OpencodeServerMode, type OpencodeServerVersion } from "../config.js";
+import { logger } from "../utils/logger.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const DEFAULT_OPENCODE_PORT = 4096;
+/** Stand-only. Not a published setting: the e2e launcher sets it, production does not. */
+const STAND_SERVER_PID_ENV = "OPENCODE_STAND_PID_FILE";
 const PROCESS_EXIT_POLL_MS = 100;
 const VERSION_READ_TIMEOUT_MS = 10_000;
 
@@ -72,11 +84,19 @@ function isExecutableFile(filePath: string): boolean {
   }
 }
 
-/** Directories the OpenCode installer adds to the shell rc files, not to a service PATH. */
+/** Set it to an absolute executable path to override the search below. */
+const OPENCODE_BIN_PATH_ENV = "OPENCODE_BIN_PATH";
+
+/** Directories the installers and package managers use, not a service PATH. */
 const POSIX_OPENCODE_FALLBACK_DIRS = [
   path.join(".opencode", "bin"),
   path.join(".local", "bin"),
   path.join(".npm-global", "bin"),
+  path.join(".bun", "bin"),
+  path.join(".local", "share", "pnpm"),
+  path.join("Library", "pnpm"),
+  path.join(".yarn", "bin"),
+  path.join(".config", "yarn", "global", "bin"),
 ];
 
 const POSIX_OPENCODE_FALLBACK_PATHS = [
@@ -86,12 +106,20 @@ const POSIX_OPENCODE_FALLBACK_PATHS = [
 ];
 
 /**
- * The `opencode` command to run on Linux and macOS. PATH keeps precedence, so the bot
- * starts whichever opencode the shell would. Service managers (systemd, cron, a desktop
- * launcher) start the bot with a PATH that usually lacks the installer's directory, so
- * fall back to the places the installer and npm use.
+ * The `opencode` command to run on Linux and macOS. An explicit
+ * `OPENCODE_BIN_PATH` wins, then PATH keeps precedence, so the bot starts
+ * whichever opencode the shell would. Service managers (systemd, cron, a desktop
+ * launcher) start the bot with a PATH that usually lacks the installer's
+ * directory, so fall back to the places the installers and package managers use.
  */
 export function resolvePosixOpencodeExecutable(): string {
+  const configured = process.env[OPENCODE_BIN_PATH_ENV]?.trim();
+  // Only an absolute path: a relative value would let spawn resolve the bare
+  // name through PATH and start a different executable than the one checked here.
+  if (configured && path.isAbsolute(configured) && isExecutableFile(configured)) {
+    return configured;
+  }
+
   const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
   for (const entry of pathEntries) {
     if (isExecutableFile(path.join(entry, "opencode"))) {
@@ -157,31 +185,74 @@ function resolveWindowsOpencodeExe(): string {
 
 /** The local `opencode` executable with the given arguments, resolved per platform. */
 function createOpencodeCommand(args: string[]): OpencodeServeSpawnCommand {
+  let command: OpencodeServeSpawnCommand;
+
   if (process.platform === "win32") {
     const resolvedExe = resolveWindowsOpencodeExe();
 
-    if (resolvedExe) {
-      return { command: resolvedExe, args, windowsHide: true };
-    }
-
-    // Safe fallback: works with default npm installs where only opencode.cmd is on PATH.
-    return { command: "cmd.exe", args: ["/c", "opencode", ...args], windowsHide: true };
+    command = resolvedExe
+      ? { command: resolvedExe, args, windowsHide: true }
+      : // Safe fallback: works with default npm installs where only opencode.cmd is on PATH.
+        { command: "cmd.exe", args: ["/c", "opencode", ...args], windowsHide: true };
+  } else {
+    command = { command: resolvePosixOpencodeExecutable(), args, windowsHide: false };
   }
 
-  return { command: resolvePosixOpencodeExecutable(), args, windowsHide: false };
+  logger.debug(`[OpenCode] Using executable: ${command.command}`);
+  return command;
 }
 
 /**
- * V1 runs a plain server; V2 runs the registered background server (`--service`) so a
- * regular V2 CLI connects to it. The port applies to this launch only.
+ * V1 and V2 standalone run a plain server. V2 service mode runs the registered
+ * background server (`--service`) so a regular V2 CLI connects to it. The port
+ * applies to this launch only. The child inherits the bot environment, which is
+ * how a standalone server receives OPENCODE_SERVER_PASSWORD.
  */
 export function createOpencodeServeSpawnCommand(
   target: LocalOpencodeTarget,
   version: OpencodeServerVersion,
+  mode: OpencodeServerMode = config.opencode.serverMode,
 ): OpencodeServeSpawnCommand {
   const port = target.port.toString();
-  const serveArgs = version === "v2" ? ["serve", "--service"] : ["serve"];
+  const serveArgs = version === "v2" && mode === "service" ? ["serve", "--service"] : ["serve"];
   return createOpencodeCommand([...serveArgs, "--port", port]);
+}
+
+function standServerPidFile(): string | null {
+  const pidFile = process.env[STAND_SERVER_PID_ENV]?.trim();
+  return pidFile || null;
+}
+
+/** Records the server this process just spawned, so stand teardown can tell it from a stranger on the same port. */
+export function recordStandServerPid(pid: number | undefined): void {
+  const pidFile = standServerPidFile();
+  if (!pidFile || !pid) {
+    return;
+  }
+
+  mkdirSync(path.dirname(pidFile), { recursive: true });
+  writeFileSync(pidFile, `${pid}\n`, "utf8");
+}
+
+/** Drops the record only when the stopped pid is the one the stand started. */
+export function clearStandServerPid(pid: number): void {
+  const pidFile = standServerPidFile();
+  if (!pidFile) {
+    return;
+  }
+
+  let recorded = "";
+  try {
+    recorded = readFileSync(pidFile, "utf8").trim();
+  } catch {
+    return;
+  }
+
+  if (recorded !== String(pid)) {
+    return;
+  }
+
+  rmSync(pidFile, { force: true });
 }
 
 export function parseOpencodeVersionOutput(stdout: string): string | null {
@@ -214,11 +285,13 @@ export function startLocalOpencodeServer(
 ): ChildProcess {
   const spawnCommand = createOpencodeServeSpawnCommand(target, version);
 
-  return spawn(spawnCommand.command, spawnCommand.args, {
+  const child = spawn(spawnCommand.command, spawnCommand.args, {
     detached: true,
     stdio: "ignore",
     windowsHide: spawnCommand.windowsHide,
   });
+  recordStandServerPid(child.pid);
+  return child;
 }
 
 function parsePid(value: string): number | null {

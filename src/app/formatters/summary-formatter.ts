@@ -129,6 +129,41 @@ function getToolIcon(tool: string): string {
   }
 }
 
+/** Finished the call, successfully or not: its result, never its arguments, says what happened. */
+function isFinishedCall(toolInfo: ToolInfo): boolean {
+  return (
+    "status" in toolInfo.state &&
+    (toolInfo.state.status === "completed" || toolInfo.state.status === "error")
+  );
+}
+
+/**
+ * What a `todowrite` call says its list is: the arguments it is running on, until it finishes, and
+ * the result it finished with after that. A running call's result metadata is only a fallback for
+ * the case where the list arrives there before the call ends.
+ */
+function getTodoItems(
+  toolInfo: ToolInfo,
+  finished: boolean,
+): Array<{ content: string; status: string }> | undefined {
+  const source = finished
+    ? toolInfo.metadata?.todos
+    : (toolInfo.input?.todos ?? toolInfo.metadata?.todos);
+  return toTodoItems(source);
+}
+
+/** The list behind a `todos` value, with everything that is not an item left out. */
+function toTodoItems(source: unknown): Array<{ content: string; status: string }> | undefined {
+  if (source === undefined) {
+    return undefined;
+  }
+
+  return (Array.isArray(source) ? source : []).filter(
+    (item): item is { content: string; status: string } =>
+      isRecord(item) && typeof item.content === "string" && typeof item.status === "string",
+  );
+}
+
 function formatTodos(todos: Array<{ content: string; status: string }>): string {
   const MAX_TODOS = 20;
 
@@ -156,6 +191,50 @@ function formatTodos(todos: Array<{ content: string; status: string }>): string 
   }
 
   return result;
+}
+
+/** A `todowrite` call as the chat shows it: its heading and item lines, and its counts. */
+export interface TodoSnapshot {
+  text: string;
+  done: number;
+  total: number;
+}
+
+/**
+ * The snapshot a `todowrite` call carries: nothing until its list is known, then the same heading
+ * and item lines an ordinary tool line shows, with the counts its collapsed form needs.
+ */
+export function getTodoSnapshot(toolInfo: ToolInfo): TodoSnapshot | null {
+  if (toolInfo.tool !== "todowrite") {
+    return null;
+  }
+
+  return buildTodoSnapshot(getTodoItems(toolInfo, isFinishedCall(toolInfo)));
+}
+
+/** A snapshot for an already read list, with the same heading, markers, limits and counts. */
+export function buildTodoSnapshot(source: unknown): TodoSnapshot | null {
+  const todos = toTodoItems(source);
+  if (!todos) {
+    return null;
+  }
+
+  return {
+    text: formatTodoSnapshotText(todos),
+    done: todos.filter((todo) => todo.status === "completed").length,
+    total: todos.length,
+  };
+}
+
+/** The collapsed form of a snapshot: counts only, no item lines and no duration. */
+export function formatCollapsedTodoSnapshot(done: number, total: number): string {
+  return `${getToolIcon("todowrite")} todowrite (${done}/${total})`;
+}
+
+function formatTodoSnapshotText(todos: Array<{ content: string; status: string }>): string {
+  const heading = `${getToolIcon("todowrite")} todowrite (${todos.length})`;
+  const todosList = formatTodos(todos);
+  return todosList ? `${heading}\n\n${todosList}` : heading;
 }
 
 function formatDiffLineInfo(filediff: {
@@ -290,18 +369,11 @@ export function formatToolInfo(toolInfo: ToolInfo): string | null {
     `[Formatter] formatToolInfo: tool=${tool}, hasMetadata=${!!toolInfo.metadata}, hasFilediff=${!!toolInfo.metadata?.filediff}`,
   );
 
-  if (tool === "todowrite" && toolInfo.metadata?.todos) {
-    const todos = (Array.isArray(toolInfo.metadata.todos) ? toolInfo.metadata.todos : [])
-      .filter(
-        (item): item is { content: string; status: string } =>
-          isRecord(item) &&
-          typeof item.content === "string" &&
-          typeof item.status === "string",
-      )
-      .map(({ content, status }) => ({ content, status }));
-    const toolIcon = getToolIcon(tool);
-    const todosList = formatTodos(todos);
-    return `${toolIcon} ${tool} (${todos.length})\n\n${todosList}`;
+  if (tool === "todowrite") {
+    const snapshot = getTodoSnapshot(toolInfo);
+    if (snapshot) {
+      return snapshot.text;
+    }
   }
 
   const isCompleted = "status" in toolInfo.state && toolInfo.state.status === "completed";
@@ -425,8 +497,10 @@ function hasCompactToolDetails(toolInfo: ToolInfo): boolean {
     return true;
   }
 
-  if (toolInfo.tool === "todowrite" && Array.isArray(toolInfo.metadata?.todos)) {
-    return true;
+  if (toolInfo.tool === "todowrite") {
+    if (getTodoItems(toolInfo, isFinishedCall(toolInfo))) {
+      return true;
+    }
   }
 
   if (toolInfo.tool === "apply_patch") {

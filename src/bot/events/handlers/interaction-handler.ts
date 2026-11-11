@@ -17,6 +17,7 @@ import { keepAssistantDraftsBeforePrompt } from "./assistant-response-handler.js
 import { isCompactProgressMode, type EventHandlerDeps } from "./handler-context.js";
 
 type InteractionDeps = EventHandlerDeps<
+  | "assistantRunState"
   | "interactionManager"
   | "keyboardManager"
   | "permissionManager"
@@ -82,6 +83,7 @@ async function showOrQueueQuestion(
   await Promise.all([
     runtime.toolMessageBatcher.flushSession(sessionId, "question_asked"),
     runtime.toolCallStreamer.flushSession(sessionId, "question_asked"),
+    runtime.todoSnapshots.flush(sessionId),
   ]);
   await keepAssistantDraftsBeforePrompt(deps, followedSessionId);
   await runtime.letOutReplies(followedSessionId);
@@ -178,6 +180,7 @@ async function presentPermission(
   await Promise.all([
     runtime.toolMessageBatcher.flushSession(sessionId, "permission_asked"),
     runtime.toolCallStreamer.flushSession(sessionId, "permission_asked"),
+    runtime.todoSnapshots.flush(sessionId),
   ]);
   await keepAssistantDraftsBeforePrompt(deps, followedSessionId);
   await runtime.letOutReplies(followedSessionId);
@@ -257,6 +260,10 @@ export function registerInteractionHandlers(deps: InteractionDeps): void {
         });
       }
     }
+  });
+
+  summaryAggregator.setOnFooterSuppressed((sessionId) => {
+    deps.assistantRunState.suppressFooter(sessionId);
   });
 
   summaryAggregator.setOnQuestionSettled(async (sessionId, requestID, outcome) => {

@@ -1,5 +1,6 @@
-import type { Event, Part, Session, ToolState } from "@opencode-ai/sdk/v2";
+import type { AssistantMessage, Event, Part, Session, ToolState } from "@opencode-ai/sdk/v2";
 import type { FormInfo, OpenCodeEvent, SessionInboxItem } from "@opencode/client";
+import { isGoalInternalMetadata } from "./goal-message.js";
 import {
   toolContentText,
   toV1ErrorPayload,
@@ -21,6 +22,8 @@ type ToolInput = Record<string, unknown>;
 /** A V1 idle, plus the mark of an execution that was interrupted rather than finished. */
 type IdleEventProperties = Extract<Event, { type: "session.idle" }>["properties"] & {
   interrupted?: true;
+  /** Why the execution stopped. Present only on an interrupted idle. */
+  reason?: "user" | "shutdown" | "superseded" | "inactivity";
 };
 
 /**
@@ -34,6 +37,7 @@ export interface ConnectedEventProperties {
 interface AssistantMessageState {
   sessionID: string;
   created: number;
+  streamed?: number;
   agent: string;
   providerID: string;
   modelID: string;
@@ -76,9 +80,33 @@ export interface V2EventTranslatorOptions {
  * items are the exception when the caller passes them in: a message queued before a
  * reconnect is delivered on the next subscription, and its pickup needs the item.
  */
+function translateGoalChanged(event: OpenCodeEvent): Event[] {
+  if (event.type !== "rpc.opencode.goal.changed") {
+    return [];
+  }
+
+  const data = event.data as { sessionID?: unknown; goal?: unknown };
+  if (typeof data.sessionID !== "string") {
+    return [];
+  }
+
+  return [
+    {
+      id: event.id,
+      type: "goal.changed",
+      properties: {
+        sessionID: data.sessionID,
+        goal: data.goal ?? null,
+      },
+    } as unknown as Event,
+  ];
+}
+
 export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) {
   const sessions = new Map<string, SessionState>();
   const messages = new Map<string, AssistantMessageState>();
+  // Stream time that arrived before the step's message state existed.
+  const streamedAt = new Map<string, number>();
   const tools = new Map<string, ToolCallState>();
   // Keyed by what announces the real end: `shell:<shell id>` or `session:<child session id>`.
   const backgroundCalls = new Map<string, BackgroundCallState>();
@@ -137,7 +165,8 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
           time: {
             created: state?.created ?? Date.now(),
             ...(extra.completed ? { completed: extra.completed } : {}),
-          },
+            ...(state?.streamed !== undefined ? { streamed: state.streamed } : {}),
+          } as AssistantMessage["time"],
           ...(extra.error ? { error: extra.error } : {}),
           parentID: "",
           modelID: state?.modelID ?? "",
@@ -184,10 +213,15 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
     };
   };
 
-  const idleEvents = (sessionID: string, id: string, interrupted = false): Event[] => {
+  const idleEvents = (
+    sessionID: string,
+    id: string,
+    interrupted = false,
+    reason?: IdleEventProperties["reason"],
+  ): Event[] => {
     // V1 has no way to say a turn was stopped: the idle of an interrupted execution carries it.
     const idleProperties: IdleEventProperties = interrupted
-      ? { sessionID, interrupted: true }
+      ? { sessionID, interrupted: true, ...(reason ? { reason } : {}) }
       : { sessionID };
     return [
       {
@@ -325,6 +359,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
             event.data.sessionID,
             event.id,
             event.type === "session.execution.interrupted",
+            event.type === "session.execution.interrupted" ? event.data.reason : undefined,
           ),
           ...endBackgroundCall(`session:${event.data.sessionID}`, created, { metadata: {} }),
         ];
@@ -381,7 +416,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
       case "session.inbox.delivered": {
         const item = inbox.get(event.data.inboxID);
         inbox.delete(event.data.inboxID);
-        if (!item || item.type !== "user") {
+        if (!item || item.type !== "user" || isGoalInternalMetadata(item.payload.metadata)) {
           return [];
         }
         const { sessionID, inboxID } = event.data;
@@ -416,9 +451,12 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
 
       case "session.step.started": {
         const data = event.data;
+        const rememberedStreamed = streamedAt.get(data.assistantMessageID);
+        streamedAt.delete(data.assistantMessageID);
         messages.set(data.assistantMessageID, {
           sessionID: data.sessionID,
           created: data.started,
+          ...(rememberedStreamed !== undefined ? { streamed: rememberedStreamed } : {}),
           agent: data.agent,
           providerID: data.model.providerID,
           modelID: data.model.id,
@@ -441,6 +479,11 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
 
       case "session.step.ended": {
         const data = event.data;
+        const rememberedStreamed = streamedAt.get(data.assistantMessageID);
+        const state = messages.get(data.assistantMessageID);
+        if (state && rememberedStreamed !== undefined) {
+          state.streamed = rememberedStreamed;
+        }
         const translated: Event[] = [
           partUpdated(
             {
@@ -463,11 +506,28 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
           }),
         ];
         messages.delete(data.assistantMessageID);
+        streamedAt.delete(data.assistantMessageID);
         return translated;
+      }
+
+      case "session.step.streamed": {
+        const data = event.data;
+        const state = messages.get(data.assistantMessageID);
+        if (state) {
+          state.streamed = created;
+        } else {
+          streamedAt.set(data.assistantMessageID, created);
+        }
+        return [];
       }
 
       case "session.step.failed": {
         const data = event.data;
+        const rememberedStreamed = streamedAt.get(data.assistantMessageID);
+        const state = messages.get(data.assistantMessageID);
+        if (state && rememberedStreamed !== undefined) {
+          state.streamed = rememberedStreamed;
+        }
         const translated = [
           assistantInfo(data.assistantMessageID, {
             completed: created,
@@ -477,6 +537,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
           }),
         ];
         messages.delete(data.assistantMessageID);
+        streamedAt.delete(data.assistantMessageID);
         return translated;
       }
 
@@ -693,7 +754,7 @@ export function createV2EventTranslator(options: V2EventTranslatorOptions = {}) 
         ];
 
       default:
-        return [];
+        return translateGoalChanged(event);
     }
   };
 

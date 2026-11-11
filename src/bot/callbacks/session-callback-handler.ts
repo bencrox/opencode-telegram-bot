@@ -1,12 +1,23 @@
 import type { Bot, Context } from "grammy";
 import type { AppContainer } from "../../app/bootstrap/app-container.js";
 import { opencodeClient } from "../../opencode/client.js";
-import { resolveProjectAgent } from "../../app/services/agent-selection-service.js";
-import { getStoredModel } from "../../app/services/model-selection-service.js";
+import {
+  getStoredAgent,
+  resolveProjectAgent,
+  selectAgent,
+} from "../../app/services/agent-selection-service.js";
+import { getStoredModel, selectModel } from "../../app/services/model-selection-service.js";
+import type { ModelInfo } from "../../app/types/model.js";
+import type { BackgroundSessionTrackerSnapshot } from "../../app/managers/background-session-manager.js";
 import { setCurrentSession } from "../../app/services/session-service.js";
+import { markSessionReplyRead } from "../../app/services/session-reply-read-service.js";
 import { applySessionSettings } from "../../app/services/session-settings-service.js";
 import type { SessionInfo } from "../../app/types/session.js";
-import { getCurrentProject } from "../../app/stores/settings-store.js";
+import type { ProjectInfo } from "../../app/types/project.js";
+import { getCurrentProject, getCurrentSession } from "../../app/stores/settings-store.js";
+import { switchToProject } from "../../app/services/project-switch-service.js";
+import { normalizePathKey } from "../../app/services/worktree-service.js";
+import { createProjectSwitchPresentation } from "../services/project-switch-presentation.js";
 import { appendInlineMenuCancelButton, ensureActiveInlineMenu } from "../menus/inline-menu.js";
 import { isForegroundBusy } from "../../app/services/run-control-service.js";
 import { replyBusyBlocked } from "../messages/busy-blocked-renderer.js";
@@ -15,7 +26,7 @@ import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import { config } from "../../config.js";
 import { t } from "../../i18n/index.js";
 import { formatSessionTitle } from "../../app/formatters/session-title-formatter.js";
-import { alert, failure } from "./feedback.js";
+import { alert, cancelMenu, failure } from "./feedback.js";
 import { attachToSession } from "../../app/services/attach-service.js";
 import { renderAssistantFinalPartsSafe } from "../messages/assistant-rendering.js";
 import {
@@ -38,7 +49,10 @@ import {
   parseSessionIdCallback,
   parseSessionPageCallback,
   SESSION_CALLBACK_PREFIX,
+  SESSION_SEARCH_QUERY_MAX_LENGTH,
   loadSessionPage,
+  searchSessions,
+  buildSessionSearchView,
 } from "../menus/session-selection-menu.js";
 
 export type SessionSelectDeps = Pick<
@@ -57,11 +71,184 @@ export type SessionSelectDeps = Pick<
   bot: Bot<Context>;
 };
 
+/** The managers a project switch needs on top of the ones a session selection needs. */
+export type BackgroundSessionOpenDeps = SessionSelectDeps &
+  Pick<AppContainer, "backgroundSessionTracker" | "goalManager" | "resetAggregator">;
+
+type SessionSearchDeps = Pick<AppContainer, "interactionManager">;
+
+function sessionSearchState(deps: SessionSearchDeps) {
+  const state = deps.interactionManager.getSnapshot();
+  return state?.kind === "custom" && state.metadata.flow === "session-search"
+    ? state.metadata
+    : null;
+}
+
+function sameSessionSearch(deps: SessionSearchDeps, state: Record<string, unknown>): boolean {
+  const current = sessionSearchState(deps);
+  return !!current && current.token === state.token && current.stage === state.stage;
+}
+
+function startSessionSearch(deps: SessionSearchDeps): void {
+  deps.interactionManager.start({
+    kind: "custom",
+    expectedInput: "text",
+    allowedCommands: [],
+    metadata: { flow: "session-search", stage: "input", token: Symbol("session-search") },
+  });
+}
+
+export async function handleSessionSearchTextInput(
+  ctx: Context,
+  deps: SessionSearchDeps,
+): Promise<boolean> {
+  const state = sessionSearchState(deps);
+  if (!state || state.stage !== "input" || ctx.message?.text === undefined) return false;
+  // A session title never comes near this length; the cap keeps the heading sendable.
+  const query = ctx.message.text.slice(0, SESSION_SEARCH_QUERY_MAX_LENGTH);
+  if (!query.trim()) return true;
+  try {
+    const project = getCurrentProject();
+    if (!project) throw new Error("Project no longer selected");
+    const sessions = await searchSessions(project.worktree, query);
+    if (!sameSessionSearch(deps, state)) return true;
+    const view = buildSessionSearchView(sessions, query, 0, config.bot.sessionsListLimit);
+    const sent = await ctx.reply(view.text, { reply_markup: view.keyboard });
+    if (!sameSessionSearch(deps, state)) return true;
+    deps.interactionManager.transition({
+      expectedInput: "callback",
+      metadata: {
+        ...state,
+        stage: "results",
+        query,
+        messageId: sent.message_id,
+        ids: sessions.map((session) => session.id),
+      },
+    });
+  } catch (error) {
+    logger.error("[Sessions] Error searching sessions:", error);
+    if (sameSessionSearch(deps, state)) {
+      deps.interactionManager.clear("session_search_error");
+      await ctx.reply(t("sessions.fetch_error"));
+    }
+  }
+  return true;
+}
+
+export async function handleSessionSearchCallback(
+  ctx: Context,
+  deps: SessionSelectDeps,
+): Promise<boolean> {
+  const data = ctx.callbackQuery?.data;
+  if (!data || (data !== "session:search" && !data.startsWith("session:search:"))) return false;
+  if (isForegroundBusy(deps)) {
+    await replyBusyBlocked(ctx);
+    return true;
+  }
+  if (data === "session:search") {
+    if (!(await ensureActiveInlineMenu(ctx, "session", deps))) return true;
+    const initial = deps.interactionManager.getSnapshot();
+    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx.deleteMessage().catch(() => {});
+    const current = deps.interactionManager.getSnapshot();
+    if (current?.kind !== "inline" || current.metadata.messageId !== initial?.metadata.messageId)
+      return true;
+    startSessionSearch(deps);
+    await ctx.reply(t("sessions.search.prompt"));
+    return true;
+  }
+  const state = sessionSearchState(deps);
+  if (
+    !state ||
+    state.stage !== "results" ||
+    state.messageId !== ctx.callbackQuery?.message?.message_id
+  ) {
+    await ctx
+      .answerCallbackQuery({ text: t("inline.inactive_callback"), show_alert: true })
+      .catch(() => {});
+    return true;
+  }
+  if (data === "session:search:cancel") {
+    deps.interactionManager.clear("session_search_cancelled");
+    await cancelMenu(ctx);
+    return true;
+  }
+  if (data === "session:search:again") {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx.deleteMessage().catch(() => {});
+    if (!sameSessionSearch(deps, state)) return true;
+    startSessionSearch(deps);
+    await ctx.reply(t("sessions.search.prompt"));
+    return true;
+  }
+  if (data.startsWith("session:search:page:")) {
+    const raw = data.slice("session:search:page:".length);
+    if (!/^\d+$/.test(raw) || typeof state.query !== "string") return true;
+    try {
+      const project = getCurrentProject();
+      if (!project) throw new Error("Project no longer selected");
+      const sessions = await searchSessions(project.worktree, state.query);
+      if (!sameSessionSearch(deps, state)) {
+        await ctx.answerCallbackQuery().catch(() => {});
+        return true;
+      }
+      const view = buildSessionSearchView(
+        sessions,
+        state.query,
+        Number(raw),
+        config.bot.sessionsListLimit,
+      );
+      await ctx.editMessageText(view.text, { reply_markup: view.keyboard });
+      if (!sameSessionSearch(deps, state)) {
+        await ctx.answerCallbackQuery().catch(() => {});
+        return true;
+      }
+      deps.interactionManager.transition({
+        expectedInput: "callback",
+        metadata: { ...state, ids: sessions.map((session) => session.id) },
+      });
+      await ctx.answerCallbackQuery();
+    } catch (error) {
+      logger.error("[Sessions] Error loading search page:", error);
+      await ctx.answerCallbackQuery({ text: t("sessions.page_load_error_callback") });
+    }
+    return true;
+  }
+  if (data.startsWith("session:search:result:")) {
+    const raw = data.slice("session:search:result:".length);
+    const id = /^\d+$/.test(raw) && Array.isArray(state.ids) ? state.ids[Number(raw)] : undefined;
+    if (typeof id !== "string") {
+      await failure(ctx, "sessions.select_error");
+      return true;
+    }
+    try {
+      await selectSessionById(ctx, deps, id, {
+        source: "menu",
+        deleteCallbackMessage: true,
+        removeCallbackReplyMarkup: false,
+        postSelectAction: "preview",
+        searchState: state,
+      });
+    } catch (error) {
+      if (!sameSessionSearch(deps, state)) {
+        await ctx.answerCallbackQuery().catch(() => {});
+        return true;
+      }
+      deps.resetInteractions("session_select_error");
+      logger.error("[Sessions] Error selecting session:", error);
+      await failure(ctx, "sessions.select_error");
+    }
+    return true;
+  }
+  return true;
+}
+
 interface SelectSessionByIdOptions {
   source: "menu" | "background_notification";
   deleteCallbackMessage: boolean;
   removeCallbackReplyMarkup: boolean;
   postSelectAction: "preview" | "latest_assistant_response" | "none";
+  searchState?: Record<string, unknown>;
 }
 
 const LATEST_ASSISTANT_RESPONSE_MESSAGES_LIMIT = 20;
@@ -72,8 +259,10 @@ type SessionMessageLike = {
   info: {
     role?: string;
     summary?: boolean;
+    error?: unknown;
     time?: {
       created?: number;
+      completed?: number | undefined;
     };
   };
   parts: Array<{ type: string; text?: string }>;
@@ -105,6 +294,11 @@ export async function selectSessionById(
     sessionID: sessionId,
     directory: currentProject.worktree,
   });
+
+  if (options.searchState && !sameSessionSearch(deps, options.searchState)) {
+    await ctx.answerCallbackQuery().catch(() => {});
+    return;
+  }
 
   if (error || !session) {
     throw error || new Error("Failed to get session details");
@@ -163,7 +357,10 @@ export async function selectSessionById(
         try {
           await ctx.api.deleteMessage(ctx.chat.id, loadingMessageId);
         } catch (deleteError) {
-          logger.debug("[Sessions] Failed to delete loading message after follow error:", deleteError);
+          logger.debug(
+            "[Sessions] Failed to delete loading message after follow error:",
+            deleteError,
+          );
         }
       }
       logger.error("[Sessions] Error following selected session:", err);
@@ -219,7 +416,8 @@ export async function selectSessionById(
       if (options.postSelectAction === "latest_assistant_response") {
         safeBackgroundTask({
           taskName: "sessions.sendLatestAssistantResponse",
-          task: () => sendLatestAssistantResponse(ctx.api, chatId, session.id, currentProject.worktree),
+          task: () =>
+            sendLatestAssistantResponse(ctx.api, chatId, session.id, currentProject.worktree),
         });
       }
     }
@@ -243,9 +441,70 @@ function shouldBlockBackgroundSessionOpen(deps: SessionSelectDeps): boolean {
   return activeInteraction !== null && activeInteraction.kind !== "inline";
 }
 
+const BACKGROUND_PROJECT_SWITCH_REASON = "background_session_project_switched";
+const BACKGROUND_OPEN_ROLLBACK_REASON = "background_session_open_rollback";
+
+/** What the selection looked like before a notification moved it to another project. */
+interface BackgroundOpenRollback {
+  project: ProjectInfo;
+  session: SessionInfo | undefined;
+  agent: string;
+  model: ModelInfo;
+  tracker: BackgroundSessionTrackerSnapshot;
+}
+
+/**
+ * The session a notification points at, read the way the selection reads it — in the selected
+ * project's directory — so the answer carries the session's real directory and project. A session
+ * the server does not return is an error rather than a reason to open it in the selected project.
+ */
+async function readNotifiedSession(sessionId: string, directory: string) {
+  const { data, error } = await opencodeClient.session.get({ sessionID: sessionId, directory });
+  if (error || !data) {
+    throw error || new Error(`Session ${sessionId} was not returned for ${directory}`);
+  }
+  return data;
+}
+
+/** The project a session belongs to, recorded the way the recent-sessions menu records it. */
+function projectOfSession(session: { projectID: string; directory: string }): ProjectInfo {
+  return { id: session.projectID, worktree: session.directory, name: session.directory };
+}
+
+/**
+ * Puts back what a failed open changed: the project, the agent and model the open pulled from its
+ * session, the background tracking state the switch wiped and the session itself. A rollback that
+ * fails leaves its trace in the log only — the user still gets the selection error.
+ */
+async function restoreSelectionAfterFailedOpen(
+  ctx: Context,
+  deps: BackgroundSessionOpenDeps,
+  previous: BackgroundOpenRollback,
+): Promise<void> {
+  try {
+    selectAgent(previous.agent);
+    selectModel(previous.model);
+    await switchToProject(ctx, previous.project, BACKGROUND_OPEN_ROLLBACK_REASON, {
+      ...deps,
+      presentation: createProjectSwitchPresentation(deps),
+    });
+    deps.backgroundSessionTracker.restore(previous.tracker);
+    if (!previous.session || !ctx.chat) {
+      return;
+    }
+    setCurrentSession(previous.session);
+    await attachToSession({ ...deps, chatId: ctx.chat.id, session: previous.session });
+  } catch (error) {
+    logger.error(
+      "[Sessions] Failed to restore the selection after a failed background open:",
+      error,
+    );
+  }
+}
+
 export async function handleBackgroundSessionOpen(
   ctx: Context,
-  deps: SessionSelectDeps,
+  deps: BackgroundSessionOpenDeps,
 ): Promise<boolean> {
   const data = ctx.callbackQuery?.data;
   if (!data) {
@@ -263,22 +522,55 @@ export async function handleBackgroundSessionOpen(
   }
 
   if (shouldBlockBackgroundSessionOpen(deps)) {
-    await ctx.answerCallbackQuery({ text: t("interaction.blocked.finish_current") }).catch(() => {});
+    await ctx
+      .answerCallbackQuery({ text: t("interaction.blocked.finish_current") })
+      .catch(() => {});
     return true;
   }
 
+  const previousProject = getCurrentProject();
+  const previousSession = getCurrentSession();
+  // An old notification outlives the project it was sent from: its session, not the selected
+  // project, decides where the prompt runs, so the selection is moved to that project first.
+  let rollback: BackgroundOpenRollback | null = null;
+
   try {
+    if (previousProject) {
+      const notified = await readNotifiedSession(payload.sessionId, previousProject.worktree);
+      if (normalizePathKey(notified.directory) !== normalizePathKey(previousProject.worktree)) {
+        logger.info(
+          `[Sessions] Background session ${payload.sessionId} belongs to ${notified.directory}; switching from ${previousProject.worktree}`,
+        );
+        // The switch can fail halfway, after the project is written, so the rollback is armed first.
+        rollback = {
+          project: previousProject,
+          session: previousSession,
+          agent: getStoredAgent(),
+          model: { ...getStoredModel() },
+          tracker: deps.backgroundSessionTracker.snapshot(),
+        };
+        await switchToProject(ctx, projectOfSession(notified), BACKGROUND_PROJECT_SWITCH_REASON, {
+          ...deps,
+          presentation: createProjectSwitchPresentation(deps),
+        });
+      }
+    }
+
     await selectSessionById(ctx, deps, payload.sessionId, {
       source: "background_notification",
       deleteCallbackMessage: false,
       removeCallbackReplyMarkup: true,
-      postSelectAction: payload.kind === "assistant_response" ? "latest_assistant_response" : "none",
+      postSelectAction:
+        payload.kind === "assistant_response" ? "latest_assistant_response" : "none",
     });
   } catch (error) {
     logger.error("[Sessions] Error selecting background session:", error);
-    await ctx.answerCallbackQuery({ text: t("sessions.select_error"), show_alert: true }).catch(
-      () => {},
-    );
+    if (rollback) {
+      await restoreSelectionAfterFailedOpen(ctx, deps, rollback);
+    }
+    await ctx
+      .answerCallbackQuery({ text: t("sessions.select_error"), show_alert: true })
+      .catch(() => {});
   }
 
   return true;
@@ -566,6 +858,12 @@ async function sendSessionPickTranscript(
     await sendRenderedBotPart({ api, chatId, part, options: AGENT_TEXT_LINK_PREVIEW_OPTIONS });
   }
 
+  // The reply is in the chat now: its session stops carrying the unread mark. A send that threw
+  // above leaves the mark where it was, and so does a reply that has not finished yet.
+  if (reply.completed !== undefined) {
+    markSessionReplyRead(sessionId, reply.completed);
+  }
+
   // A message sent after the shown reply started is still waiting for its own reply: show it
   // too, so the picked session does not look like the message never went through.
   const pendingPrompt = messages ? findPendingUserPrompt(messages, reply.created) : null;
@@ -578,7 +876,7 @@ async function sendSessionPickTranscript(
 async function loadLatestAssistantResponse(
   sessionId: string,
   directory: string,
-): Promise<string | null> {
+): Promise<{ text: string; shownAt: number | null } | null> {
   try {
     const { data: messages, error } = await opencodeClient.session.messages({
       sessionID: sessionId,
@@ -594,6 +892,8 @@ async function loadLatestAssistantResponse(
     const latestResponse = (messages as SessionMessageLike[]).reduce<{
       text: string;
       created: number;
+      completedAt?: number | undefined;
+      errored: boolean;
     } | null>((latest, message) => {
       if (message.info.role !== "assistant" || message.info.summary) {
         return latest;
@@ -606,13 +906,27 @@ async function loadLatestAssistantResponse(
 
       const created = message.info.time?.created ?? 0;
       if (!latest || created >= latest.created) {
-        return { text, created };
+        return {
+          text,
+          created,
+          completedAt: message.info.time?.completed,
+          errored: Boolean(message.info.error),
+        };
       }
 
       return latest;
     }, null);
 
-    return latestResponse?.text ?? null;
+    if (!latestResponse) {
+      return null;
+    }
+
+    // Only a finished, successful reply is the reply a mark is about. One that failed or is still
+    // streaming is shown as it is, and clears nothing.
+    return {
+      text: latestResponse.text,
+      shownAt: latestResponse.errored ? null : latestResponse.completedAt ?? null,
+    };
   } catch (err) {
     logger.error("[Sessions] Error loading latest assistant response:", err);
     return null;
@@ -625,12 +939,12 @@ async function sendLatestAssistantResponse(
   sessionId: string,
   directory: string,
 ): Promise<void> {
-  const responseText = await loadLatestAssistantResponse(sessionId, directory);
-  if (!responseText) {
+  const response = await loadLatestAssistantResponse(sessionId, directory);
+  if (!response) {
     return;
   }
 
-  const parts = renderAssistantFinalPartsSafe(responseText);
+  const parts = renderAssistantFinalPartsSafe(response.text);
   for (const part of parts) {
     await sendRenderedBotPart({
       api,
@@ -638,5 +952,11 @@ async function sendLatestAssistantResponse(
       part,
       options: AGENT_TEXT_LINK_PREVIEW_OPTIONS,
     });
+  }
+
+  // The notification showed the reply itself, so the session stops carrying its mark; a failed
+  // send threw above and leaves the mark standing.
+  if (response.shownAt !== null) {
+    markSessionReplyRead(sessionId, response.shownAt);
   }
 }

@@ -1,4 +1,4 @@
-import type { I18nDictionary } from "./en.js";
+import { projectSearchFallback, type I18nDictionary } from "./en.js";
 
 /**
  * Korean localization for OpenCode Telegram Bot.
@@ -8,11 +8,13 @@ import type { I18nDictionary } from "./en.js";
  * Keep this dictionary complete to avoid falling back to another locale.
  */
 export const ko: I18nDictionary = {
+  ...projectSearchFallback,
   "cmd.description.recent": "모든 프로젝트의 최근 세션",
   "recent.heading": "모든 프로젝트의 최근 세션 (/recent로 새로고침):",
   "recent.empty": "📭 프로젝트에 세션이 없습니다.",
   "recent.running": "실행 중",
   "recent.idle": "대기 중",
+  "recent.status.unread": "읽지 않은 답변",
   "recent.question": "답변 대기 중",
   "recent.permission": "권한 승인 대기 중",
   "cmd.description.status": "서버 및 세션 상태",
@@ -116,7 +118,7 @@ export const ko: I18nDictionary = {
     "🔁 {message}\n\n재시도할 때마다 동일한 오류가 반복됩니다. /abort로 중단하세요.",
   "bot.external_user_input": "외부 사용자 입력",
   "background.session_fallback": "세션 {id}",
-  "background.assistant_response": "🔔 백그라운드 세션에서 답변이 도착했습니다: {session}",
+  "background.assistant_response": "🔔 다른 세션의 답변:\n[{project}] {session}",
   "background.question_asked": "❓ 백그라운드 세션에서 답변이 필요합니다: {session}",
   "background.permission_asked": "🔐 백그라운드 세션에서 권한을 요청했습니다: {session}",
   "background.open_session_button": "세션 열기",
@@ -185,7 +187,9 @@ export const ko: I18nDictionary = {
   "settings.response_streaming.draft": "초안 (실험적)",
   "settings.diff_files.label": "Diff 파일",
   "settings.assistant_footer.label": "어시스턴트 푸터",
+  "assistant.footer.interrupted": "interrupted",
   "settings.pin_session_dashboard.label": "Pin session dashboard",
+  "settings.background_notifications.label": "Notifications from other sessions",
   "settings.tts.label": "음성 답변",
   "settings.prompt_queue.label": "메시지 대기열",
   "settings.value.on": "켜기",
@@ -305,7 +309,7 @@ export const ko: I18nDictionary = {
   "opencode_start.remote_configured": "⚠️ /opencode_start는 로컬 OpenCode 서버에서만 동작합니다.",
   "opencode_start.starting": "🔄 OpenCode 서버를 시작하는 중...",
   "opencode_start.start_error":
-    "🔴 OpenCode 서버 시작에 실패했습니다\n\n오류: {error}\n\nOpenCode CLI가 설치되어 있고 PATH에서 사용 가능한지 확인해 주세요:\nopencode --version\nnpm install -g @opencode-ai/cli",
+    "🔴 OpenCode 서버 시작에 실패했습니다\n\n오류: {error}\n\nOpenCode CLI가 설치되어 있고 PATH 또는 표준 설치 디렉터리에서 사용 가능한지 확인하세요(OPENCODE_BIN_PATH로 다른 실행 파일을 지정할 수 있습니다):\nopencode --version\nnpm install -g @opencode-ai/cli",
   "opencode_start.started_not_ready":
     "⚠️ OpenCode 서버가 시작되었지만 응답하지 않습니다\n\nPID: {pid}\n\n서버가 아직 시작 중일 수 있습니다. 몇 초 후 /status를 시도해 주세요.",
   "opencode_start.success":
@@ -589,6 +593,13 @@ export const ko: I18nDictionary = {
 
   "tasklist.empty": "📭 아직 예약 작업이 없습니다.",
   "tasklist.select": "예약 작업을 선택하세요:",
+  "task.scheduling": "Scheduling",
+  "task.enabled": "On",
+  "task.disabled": "Off",
+  "task.button.enable": "Enable",
+  "task.button.disable": "Disable",
+  "task.toggle.saved": "Saved",
+  "task.toggle.error": "Could not save",
   "tasklist.details":
     "⏰ 예약 작업\n\n작업: {prompt}\n프로젝트: {project}\n일정: {schedule}\n{cronLine}시간대: {timezone}\n다음 실행: {nextRunAt}\n마지막 실행: {lastRunAt}\n실행 횟수: {runCount}",
   "tasklist.details.cron": "Cron: {cron}",
@@ -723,4 +734,55 @@ export const ko: I18nDictionary = {
   "local_command.empty_output": "The command produced no output.",
   "local_command.failed": "Command failed with exit code {exitCode}: {stderr}",
   "local_command.timeout": "The command timed out.",
+
+  "cmd.description.goal": "Set a session goal that continues on its own",
+  "pinned.line.goal": "◎ Goal: {status} — {objective}",
+  "goal.none": "No goal is set.\n\nUse /goal, then send the objective in the next message.",
+  "goal.arguments_not_supported": "Use /goal without arguments, then follow the prompts or use the goal buttons.",
+  "goal.input.prompt": "Send the objective for this session in your next text message. Describe the result to achieve.",
+  "goal.input.empty": "The objective cannot be empty. Send its text or tap Cancel.",
+  "goal.input.reserved": "That word is reserved by OpenCode for goal controls. Describe the objective in more detail, or tap Cancel.",
+  "goal.button.details": "◎ {status} · {objective}",
+  "goal.button.pause": "⏸ Pause",
+  "goal.button.resume": "▶ Continue",
+  "goal.button.clear": "× Delete",
+  "goal.start": "✅ Start",
+  "goal.continue": "▶ Continue",
+  "goal.delete": "🗑 Delete goal",
+  "goal.deleted": "Goal deleted. Use /goal to create a new one.",
+  "goal.unsupported": "This OpenCode server does not support session goals.",
+  "goal.read_error": "Couldn't read the session goal.",
+  "goal.action_error": "Couldn't update the session goal.",
+  "goal.too_long": "A goal is limited to {limit} characters (got {count}).",
+  "goal.status.active": "active",
+  "goal.status.paused": "paused",
+  "goal.status.complete": "complete",
+  "goal.status.rounds": "{rounds}/{maxRounds}",
+  "goal.status.updated": "Updated {time}",
+  "goal.confirm.warning": "This goal continues on its own after each step. Continuation and judging spend tokens. There is no cost cap. The server stops it after its round limit.",
+  "goal.confirm.round_limit": "Round limit: {rounds}.",
+  "goal.confirm.start": "Start this goal?\n\n{objective}",
+  "goal.confirm.resume": "Resume this goal?\n\n{objective}",
+  "goal.confirm.confirm": "Confirm",
+  "goal.confirm.cancel": "❌ Cancel",
+  "goal.notice.paused": "◎ Goal {status}\n{reason}",
+  "goal.notice.complete": "◎ Goal {status}\n{reason}",
+  "goal.notice.no_reason": "No reason reported.",
+  "goal.abort.paused": "Goal paused: {reason}",
+  "goal.abort.failed": "Goal pause failed: {reason}",
+  "goal.reason.paused_by_user": "Paused by the user",
+  "goal.reason.stopped_by_user": "Stopped by the user",
+  "goal.reason.server_restarted": "The server restarted while the goal was active",
+  "goal.reason.stopped_after_error": "The goal stopped after an error",
+  "goal.reason.no_verdict": "The goal reviewer gave no usable verdict",
+  "goal.reason.review_too_large": "The goal reviewer's request is too large for the model",
+  "goal.reason.round_limit": "Reached the limit of {rounds} rounds",
+  "goal.reason.wait_limit": "Nothing ran for {minutes} minutes while the goal waited on background work",
+  "goal.reason.not_progress": "Not making progress: {reason}",
+  "goal.reason.session_failed": "The session failed: {reason}",
+  "goal.reason.no_active": "No active goal to pause.",
+  "goal.reason.no_paused": "No paused goal to resume.",
+  "goal.reason.none_set": "No goal is set.",
+  "goal.reason.objective_limit": "A goal objective is limited to {limit} characters (got {count}).",
+
 };

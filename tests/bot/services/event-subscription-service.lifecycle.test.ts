@@ -1,6 +1,5 @@
-import os from "node:os";
-import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
+import { createTestHome } from "../../helpers/test-environment.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, Context } from "grammy";
 import type { Event } from "@opencode-ai/sdk/v2";
@@ -14,10 +13,24 @@ const mocked = vi.hoisted(() => ({
   subscribeToEvents: vi.fn(),
   stopEventListening: vi.fn(),
   reconcileBusyState: vi.fn(),
+  fetchSessionTitle: vi.fn(),
+  loadRecentSessionDirectories: vi.fn(),
   reconciliationStreamer: {
     current: null as { hasActiveStream(sessionId: string): boolean } | null,
   },
 }));
+
+vi.mock("../../../src/app/services/session-service.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../src/app/services/session-service.js")>();
+  return { ...actual, fetchSessionTitle: mocked.fetchSessionTitle };
+});
+
+vi.mock("../../../src/app/services/recent-sessions-service.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../src/app/services/recent-sessions-service.js")>();
+  return { ...actual, loadRecentSessionDirectories: mocked.loadRecentSessionDirectories };
+});
 
 vi.mock("../../../src/opencode/events.js", () => ({
   subscribeToEvents: mocked.subscribeToEvents,
@@ -111,10 +124,16 @@ function emitAssistantCompleted(aggregator: Aggregator): void {
   } as unknown as Event);
 }
 
-function emitSessionIdle(aggregator: Aggregator, options: { interrupted?: boolean } = {}): void {
+function emitSessionIdle(
+  aggregator: Aggregator,
+  options: { interrupted?: boolean; reason?: "user" | "shutdown" } = {},
+): void {
   aggregator.processEvent({
     type: "session.idle",
-    properties: { sessionID: "session-1", ...(options.interrupted ? { interrupted: true } : {}) },
+    properties: {
+      sessionID: "session-1",
+      ...(options.interrupted ? { interrupted: true, ...(options.reason ? { reason: options.reason } : {}) } : {}),
+    },
   } as unknown as Event);
 }
 
@@ -240,16 +259,17 @@ describe("bot/services/event-subscription-service lifecycle", () => {
     vi.stubEnv("TELEGRAM_ALLOWED_USER_ID", "123456789");
     vi.stubEnv("OPENCODE_MODEL_PROVIDER", "test-provider");
     vi.stubEnv("OPENCODE_MODEL_ID", "test-model");
-    vi.stubEnv(
-      "OPENCODE_TELEGRAM_HOME",
-      await mkdtemp(path.join(os.tmpdir(), "event-service-lifecycle-")),
-    );
+    vi.stubEnv("OPENCODE_TELEGRAM_HOME", await createTestHome("event-service-lifecycle-"));
     tempHome = process.env.OPENCODE_TELEGRAM_HOME!;
     setRuntimeMode("installed");
 
     mocked.subscribeToEvents.mockReset();
     mocked.stopEventListening.mockReset();
     mocked.reconcileBusyState.mockReset();
+    mocked.fetchSessionTitle.mockReset();
+    mocked.fetchSessionTitle.mockImplementation(async (session: { title: string }) => session.title);
+    mocked.loadRecentSessionDirectories.mockReset();
+    mocked.loadRecentSessionDirectories.mockResolvedValue(["D:/repo"]);
     mocked.subscribeToEvents.mockResolvedValue(undefined);
     mocked.reconciliationStreamer.current = null;
 
@@ -264,13 +284,11 @@ describe("bot/services/event-subscription-service lifecycle", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
-    // Settings writes scheduled while timers were faked need a real tick to
-    // land before the temp home is removed.
-    await new Promise((resolve) => setTimeout(resolve, 20));
     activeService?.cleanup("test_cleanup");
     activeService = null;
 
     const settingsStore = await import("../../../src/app/stores/settings-store.js");
+    await settingsStore.flushSettings();
     settingsStore.__resetSettingsForTests();
     vi.unstubAllEnvs();
     await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
@@ -614,12 +632,57 @@ describe("bot/services/event-subscription-service lifecycle", () => {
       expect(activeContainer.assistantRunState.hasRun("session-1")).toBe(false);
     }, 30_000);
 
-    it("sends no footer for a turn stopped from an attached client", async () => {
+    it("names the interruption on a delivered turn stopped from an attached client", async () => {
       const { api, summaryAggregator } = await setup();
 
       emitSessionBusy(summaryAggregator);
       await answerTurn(api, summaryAggregator);
-      emitSessionIdle(summaryAggregator, { interrupted: true });
+      emitSessionIdle(summaryAggregator, { interrupted: true, reason: "user" });
+
+      await vi.waitFor(
+        () => {
+          expect(findFooterCalls(api)).toHaveLength(1);
+        },
+        { timeout: STREAM_WAIT_TIMEOUT_MS },
+      );
+      expect(String(findFooterCalls(api)[0]?.[1])).toMatch(/interrupted|прерван/);
+      expect(activeContainer.assistantRunState.hasRun("session-1")).toBe(false);
+    }, 30_000);
+
+    it("sends no footer when /abort has already marked a delivered turn footerless", async () => {
+      const { api, summaryAggregator } = await setup({ startAssistantRun: true });
+
+      emitSessionBusy(summaryAggregator);
+      await answerTurn(api, summaryAggregator);
+      activeContainer.assistantRunState.suppressFooter("session-1");
+      emitSessionIdle(summaryAggregator, { interrupted: true, reason: "user" });
+      await settle();
+
+      expect(findFooterCalls(api)).toHaveLength(0);
+      expect(activeContainer.assistantRunState.hasRun("session-1")).toBe(false);
+    }, 30_000);
+
+    it("sends no footer when a permission reject ends a delivered turn", async () => {
+      const { api, summaryAggregator } = await setup();
+
+      emitSessionBusy(summaryAggregator);
+      await answerTurn(api, summaryAggregator);
+      summaryAggregator.processEvent({
+        type: "permission.replied",
+        properties: { sessionID: "session-1", requestID: "perm-1", reply: "reject" },
+      } as unknown as Event);
+      emitSessionIdle(summaryAggregator, { interrupted: true, reason: "user" });
+      await settle();
+
+      expect(findFooterCalls(api)).toHaveLength(0);
+    }, 30_000);
+
+    it("sends no footer when a shutdown idle arrives before the reconnect clear", async () => {
+      const { api, summaryAggregator } = await setup();
+
+      emitSessionBusy(summaryAggregator);
+      await answerTurn(api, summaryAggregator);
+      emitSessionIdle(summaryAggregator, { interrupted: true, reason: "shutdown" });
       await settle();
 
       expect(findFooterCalls(api)).toHaveLength(0);
@@ -631,7 +694,7 @@ describe("bot/services/event-subscription-service lifecycle", () => {
 
       emitSessionBusy(summaryAggregator);
       await answerTurn(api, summaryAggregator);
-      emitSessionIdle(summaryAggregator, { interrupted: true });
+      emitSessionIdle(summaryAggregator, { interrupted: true, reason: "user" });
 
       await vi.waitFor(
         () => {
@@ -639,6 +702,7 @@ describe("bot/services/event-subscription-service lifecycle", () => {
         },
         { timeout: STREAM_WAIT_TIMEOUT_MS },
       );
+      expect(String(findFooterCalls(api)[0]?.[1])).toMatch(/interrupted|прерван/);
     }, 30_000);
 
     it("forgets the running turn when the event stream reconnects", async () => {
@@ -891,11 +955,11 @@ describe("bot/services/event-subscription-service lifecycle", () => {
       await vi.waitFor(() => {
         expect(api.sendMessage).toHaveBeenCalledTimes(1);
       });
-      expect(defined(api.sendMessage.mock.calls[0]?.[1])).toContain("Background work");
+      expect(defined(api.sendMessage.mock.calls[0]?.[1])).toContain("[repo] Background work");
       expect(defined(api.sendMessage.mock.calls[0])[2]).toHaveProperty("reply_markup");
     });
 
-    it("labels an untitled background session by its shortened id", async () => {
+    it("labels an untitled background session as a new session, never by its id", async () => {
       const { api } = await setupService();
       const dispatch = getEventDispatcher();
 
@@ -915,8 +979,10 @@ describe("bot/services/event-subscription-service lifecycle", () => {
       await vi.waitFor(() => {
         expect(api.sendMessage).toHaveBeenCalledTimes(1);
       });
-      expect(defined(api.sendMessage.mock.calls[0]?.[1])).toContain("bg-sessi");
-      expect(defined(api.sendMessage.mock.calls[0]?.[1])).not.toContain("bg-session-123456");
+      expect(defined(api.sendMessage.mock.calls[0]?.[1])).toContain(
+        "[repo] new session",
+      );
+      expect(defined(api.sendMessage.mock.calls[0]?.[1])).not.toContain("bg-session");
     });
   });
 
@@ -1124,6 +1190,83 @@ describe("bot/services/event-subscription-service lifecycle", () => {
       expect(assistantRunState.hasRun("session-1")).toBe(true);
       expect(assistantRunState.isResponseCompleted("session-1")).toBe(false);
       expect(activeContainer.foregroundSessionState.isBusy()).toBe(true);
+    }, 30_000);
+
+    it("keeps a step that arrives before the queued pickup callback off the closed run", async () => {
+      const { api, summaryAggregator } = await setupService({
+        startAssistantRun: true,
+        showAssistantRunFooter: true,
+      });
+      await mirrorInboxPrompt("queue");
+      const { assistantRunState } = activeContainer;
+      assistantRunState.markResponseCompleted("session-1", {
+        agent: "test-agent",
+        providerID: "test-provider",
+        modelID: "test-model",
+      });
+
+      emitExternalUserMessage(summaryAggregator, "Next task");
+      summaryAggregator.processEvent({
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "next-step",
+            sessionID: "session-1",
+            role: "assistant",
+            agent: "test-agent",
+            providerID: "test-provider",
+            modelID: "test-model",
+            time: { created: 1, streamed: 1_000, completed: 1_000 },
+            tokens: { input: 0, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
+        },
+      } as unknown as Event);
+
+      await vi.waitFor(
+        () => {
+          expect(findFooterCalls(api)).toHaveLength(1);
+        },
+        { timeout: STREAM_WAIT_TIMEOUT_MS },
+      );
+
+      expect(String(findFooterCalls(api)[0]?.[1])).not.toContain("tok/s");
+      expect(assistantRunState.finishRun("session-1", "test")?.steps.map((step) => step.messageID)).toEqual([
+        "next-step",
+      ]);
+    }, 30_000);
+
+    it("keeps a steered follow-up's step on the same run", async () => {
+      const { api, summaryAggregator } = await setupService({
+        startAssistantRun: true,
+        showAssistantRunFooter: true,
+      });
+      await mirrorInboxPrompt("steer");
+      const { assistantRunState } = activeContainer;
+      assistantRunState.markResponseCompleted("session-1", {
+        agent: "test-agent",
+        providerID: "test-provider",
+        modelID: "test-model",
+      });
+
+      emitExternalUserMessage(summaryAggregator, "Keep going");
+      summaryAggregator.processEvent({
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "steer-step",
+            sessionID: "session-1",
+            role: "assistant",
+            time: { created: 1, streamed: 1_000, completed: 1_000 },
+            tokens: { input: 0, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
+        },
+      } as unknown as Event);
+      await settle();
+
+      expect(findFooterCalls(api)).toHaveLength(0);
+      expect(assistantRunState.finishRun("session-1", "test")?.steps.map((step) => step.messageID)).toContain(
+        "steer-step",
+      );
     }, 30_000);
 
     it("opens a steered prompt's own run in place of a turn the bot did not start", async () => {
